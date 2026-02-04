@@ -1,0 +1,42 @@
+pomóż mi stworzyć dobry promt dla AI, aby pomogła mi stworzyć bibliotekę / create w RUST.
+Bibliotek ma odpowiadać za wymianę danych z centralą Satel Integra przez moduł Satel-ETHM Plus.
+
+Struktura:
+   -satel_integra - główny plik w którym będzie obsługa komunikacji z satelem i podstawowe funkcje 
+   -satel_integra_data - Tu przechowujemy klasę trzymająca wszystkie nasze dane 
+   -satel_integra_proccess - funkcje przetwarzające dane
+
+satel_integra_data:
+	Zawierana dane:
+		Struktura połączenie:
+			Stan_połączenia (pole wyboru, opcje: Połączono, Rozłączono, Zerwano_Połączenie)
+			Rodzaj_połączenia TCP/IP lub UART
+			Port_UART
+			Port_TCPIP
+			Adress_TCPIP
+
+			Wysłano_danych (ilość wysłanych danych w Bajtach)
+			Odebrano_danych (ilośc odebranych danych w Bajtach)
+
+
+Satel_integra:
+	Komunikacja z satelem odbywa się za pomocą TCP/IP lub UART. Użyj do tego Tokio z Codecs.
+	Funkcje:
+		Połącz - służy do połączenia się z satel integra. Otwiera strumień i go nie zamyka. 
+		         Funckja mam mieć dwa przeciążenia.
+				Połącz (ip, port) do połączenia TCP / IP
+				Połącz (port uart) do połączenia przez UART
+			po poprawnym połączeniu funkcja ustawia parametry w strukturze Struktura połączenia. Stan połączenia jako Połączono inne dane adekwatnie do wybranych przez użytkowika.
+		Wyślij (dane, timeout) - służy do wysłania danych do satela.
+			Jeśli stan_połączenia = Połączono to wyślij dane
+			Jeśli stan_połączenia = Zerwano_POŁĄCZENIe, to czekaj przez czas timeout na ponowne połączenie. jeśli się nie udało to zwórć błąd.
+			Jeśli stane_połączenia = Rozłączono t zwróć błąd
+			Jeśli w trakcie wysyłania danych nastąpi błąd związany z problemami Ethernet to ustaw stan połączenia jako Zerwano_Połączenie
+			Jeśli dane udało się WYSŁAĆ to zwiększ zmienną Wysłano_danych 
+		Odbierz (time_out) funkcja odczytuj dane. Jeśli nie będzie danych w czasie time_out to zwraca błąd.
+			Jeśli w trakcie wysyłania danych nastąpi błąd związany z problemami Ethernet to ustaw stan połączenia jako Zerwano_Połączenie
+			Jeśli dane udało się odebrać to zwiększ zmienną oDEBRANO_danych 
+		wYMIEŃ (DANE, TIMOUT)
+			Funkcja pierw wywołuje Wyślij, a następnie Odbierz i zwraca dane lub błąd.
+		
+		
