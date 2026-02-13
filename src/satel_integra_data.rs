@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
+use std::time::SystemTime;
 
 // --- Nowe Struktury Konfiguracyjne ---
 
@@ -20,6 +21,15 @@ pub struct Config {
 
     /// Opcjonalny kod użytkownika potrzebny do niektórych operacji.
     pub user_code: Option<String>,
+
+    /// Czy włączyć automatyczne ponowne połączenie.
+    #[serde(default = "default_auto_reconnect")]
+    pub auto_reconnect: bool,
+}
+
+/// Domyślna wartość dla automatycznego ponownego połączenia.
+fn default_auto_reconnect() -> bool {
+    true
 }
 
 /// Konfiguracja metody połączenia.
@@ -55,9 +65,10 @@ fn default_write_timeout() -> u64 {
 // --- Istniejące Struktury Danych (bez zmian) ---
 
 /// Status połączenia z centralą.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ConnectionStatus {
     Connected,
+    #[default]
     Disconnected,
     ConnectionLost,
 }
@@ -69,38 +80,55 @@ pub enum ConnectionType {
     Uart(String),
 }
 
-/// Metryki dotyczące transmisji danych.
-#[derive(Debug, Default)]
-pub struct ConnectionMetrics {
+/// Telemetria i stan dotyczący transmisji danych.
+#[derive(Debug)]
+pub struct ConnectionTelemetry {
+    pub status: ConnectionStatus,
+    pub last_connected_at: Option<SystemTime>,
     pub bytes_sent: AtomicUsize,
     pub bytes_received: AtomicUsize,
+    pub reconnect_count: AtomicUsize,
 }
 
-impl ConnectionMetrics {
+impl Default for ConnectionTelemetry {
+    fn default() -> Self {
+        Self {
+            status: ConnectionStatus::Disconnected,
+            last_connected_at: None,
+            bytes_sent: AtomicUsize::new(0),
+            bytes_received: AtomicUsize::new(0),
+            reconnect_count: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl ConnectionTelemetry {
     pub fn new() -> Self {
         Self::default()
     }
 
     pub fn reset(&self) {
+        // Uwaga: status i last_connected_at nie są atomowe, 
+        // ale reset() jest zazwyczaj wołany przy pełnym restarcie lub przez write locka na stanie.
+        // W tej strukturze pola te będą modyfikowane przez write locka na SatelState.
         self.bytes_sent.store(0, Ordering::Relaxed);
         self.bytes_received.store(0, Ordering::Relaxed);
+        self.reconnect_count.store(0, Ordering::Relaxed);
     }
 }
 
 /// Struktura przechowująca współdzielony stan połączenia.
 #[derive(Debug)]
 pub struct SatelState {
-    pub status: ConnectionStatus,
     pub connection_type: Option<ConnectionType>,
-    pub metrics: ConnectionMetrics,
+    pub telemetry: ConnectionTelemetry,
 }
 
 impl SatelState {
     pub fn new() -> Self {
         Self {
-            status: ConnectionStatus::Disconnected,
             connection_type: None,
-            metrics: ConnectionMetrics::new(),
+            telemetry: ConnectionTelemetry::new(),
         }
     }
 }
