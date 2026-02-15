@@ -11,15 +11,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             host: "10.20.30.5".to_string(),
             port: 7094,
         },
-        read_timeout_ms: 2000,
-        write_timeout_ms: 500,
-        temp_read_timeout_ms: 2000,
-        buffer_timeout_ms: 10000,
-        user_code: Some("123456".to_string()), 
-        auto_reconnect: true,
-        temp_blocking_enabled: true,
-        temp_max_timeout_errors: 4,
-        temp_max_sensor_errors: 10,
+        user_code: Some("123456".to_string()),
+        ..Config::default()
     };
 
     // 2. Tworzenie instancji
@@ -39,13 +32,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(temp) => {
                 let duration = start.elapsed();
                 println!(
-                    "[{:?}] Temp: {:.1}°C | Czas zapytania: {:?} | Status: {:?} | T-Err: {} | S-Err: {}", 
+                    "[{:?}] Temp: {:.1}°C | Czas zapytania: {:?}", 
                     Local::now().format("%H:%M:%S"),
                     temp.temperature, 
-                    duration,
-                    temp.status,
-                    temp.timeout_errors_current,
-                    temp.sensor_errors_current
+                    duration
                 );
             }
             Err(e) => {

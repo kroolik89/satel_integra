@@ -49,6 +49,23 @@ pub struct Config {
     pub temp_max_sensor_errors: u32,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            connection: ConnectionConfig::default(),
+            read_timeout_ms: default_read_timeout_ms(),
+            write_timeout_ms: default_write_timeout_ms(),
+            temp_read_timeout_ms: default_temp_read_timeout_ms(),
+            buffer_timeout_ms: default_buffer_timeout_ms(),
+            user_code: None,
+            auto_reconnect: default_auto_reconnect(),
+            temp_blocking_enabled: default_temp_blocking_enabled(),
+            temp_max_timeout_errors: default_temp_max_timeout_errors(),
+            temp_max_sensor_errors: default_temp_max_sensor_errors(),
+        }
+    }
+}
+
 /// Domyślna wartość dla automatycznego ponownego połączenia.
 fn default_auto_reconnect() -> bool {
     true
@@ -81,6 +98,15 @@ pub enum ConnectionConfig {
         #[serde(default = "default_baud_rate")]
         baud_rate: u32,
     },
+}
+
+impl Default for ConnectionConfig {
+    fn default() -> Self {
+        Self::Tcp {
+            host: "localhost".to_string(),
+            port: 7094,
+        }
+    }
 }
 
 /// Domyślna wartość dla baud_rate.
@@ -192,46 +218,121 @@ pub enum TemperatureSensorStatus {
     CommunicationError, // Błąd komunikacji (0xFFFF)
 }
 
-/// Temperatura z wejścia z datą odczytu, statusem i licznikami błędów.
+/// Temperatura z wejścia z datą odczytu.
 #[derive(Debug, Clone)]
 pub struct ZoneTemperature {
     pub zone_id: u16,
     pub temperature: f32,
     pub read_at: DateTime<Local>,
-    pub status: TemperatureSensorStatus,
-    pub timeout_errors_total: u32,   // 1) Całkowity licznik timeoutów
-    pub sensor_errors_total: u32,    // 2) Całkowity licznik błędów 0xFFFF
-    pub timeout_errors_current: u32, // 3) Obliczany (zmniejszany przy sukcesie)
-    pub sensor_errors_current: u32,  // 4) Obliczany (zmniejszany przy sukcesie)
 }
 
-/// Aliasy dla czytelności
+/// Aliasy dla czytelności (zachowanie kompatybilności wstecznej)
 pub type ZoneName = SatelName;
 pub type OutputName = SatelName;
 pub type PartitionName = SatelName;
 
-/// Struktura przechowująca współdzielony stan połączenia.
+/// Ujednolicona struktura Wejścia (Zone).
+#[derive(Debug, Clone)]
+pub struct Zone {
+    pub id: u16,
+    // Dane z nazwy
+    pub zone_name: String,
+    pub zone_name_read_at: DateTime<Local>,
+    // Dane z temperatury
+    pub temperature_value: f32,
+    pub temperature_read_at: DateTime<Local>,
+    pub temperature_status: TemperatureSensorStatus,
+    pub temperature_timeout_errors_total: u32,
+    pub temperature_sensor_errors_total: u32,
+    pub temperature_timeout_errors_current: u32,
+    pub temperature_sensor_errors_current: u32,
+}
+
+impl Zone {
+    pub fn new(id: u16) -> Self {
+        let now = Local::now();
+        Self {
+            id,
+            zone_name: String::new(),
+            zone_name_read_at: now,
+            temperature_value: 0.0,
+            temperature_read_at: now,
+            temperature_status: TemperatureSensorStatus::NoRead,
+            temperature_timeout_errors_total: 0,
+            temperature_sensor_errors_total: 0,
+            temperature_timeout_errors_current: 0,
+            temperature_sensor_errors_current: 0,
+        }
+    }
+
+    pub fn to_zone_name(&self) -> ZoneName {
+        ZoneName {
+            name: self.zone_name.clone(),
+            read_at: self.zone_name_read_at,
+        }
+    }
+
+    pub fn to_zone_temperature(&self) -> ZoneTemperature {
+        ZoneTemperature {
+            zone_id: self.id,
+            temperature: self.temperature_value,
+            read_at: self.temperature_read_at,
+        }
+    }
+}
+
+/// Ujednolicona struktura Wyjścia (Output).
+#[derive(Debug, Clone)]
+pub struct Output {
+    pub id: u16,
+    pub name: String,
+    pub name_read_at: DateTime<Local>,
+}
+
+impl Output {
+    pub fn new(id: u16) -> Self {
+        Self {
+            id,
+            name: String::new(),
+            name_read_at: Local::now(),
+        }
+    }
+
+    pub fn to_output_name(&self) -> OutputName {
+        OutputName {
+            name: self.name.clone(),
+            read_at: self.name_read_at,
+        }
+    }
+}
+
+/// Struktura przechowująca współdzielony stan połączenia (zunifikowany cache).
 #[derive(Debug)]
 pub struct SatelState {
     pub connection_type: Option<ConnectionType>,
     pub telemetry: ConnectionTelemetry,
     pub integra_version: Option<IntegraVersion>,
-    pub zone_names: HashMap<u16, ZoneName>,
-    pub output_names: HashMap<u16, OutputName>,
+    pub zones: Vec<Zone>,     // Tablica 256 wejść
+    pub outputs: Vec<Output>, // Tablica 256 wyjść
     pub partition_names: HashMap<u16, PartitionName>,
-    pub zone_temperatures: HashMap<u16, ZoneTemperature>,
 }
 
 impl SatelState {
     pub fn new() -> Self {
+        let mut zones = Vec::with_capacity(256);
+        let mut outputs = Vec::with_capacity(256);
+        for i in 1..=256 {
+            zones.push(Zone::new(i as u16));
+            outputs.push(Output::new(i as u16));
+        }
+
         Self {
             connection_type: None,
             telemetry: ConnectionTelemetry::new(),
             integra_version: None,
-            zone_names: HashMap::new(),
-            output_names: HashMap::new(),
+            zones,
+            outputs,
             partition_names: HashMap::new(),
-            zone_temperatures: HashMap::new(),
         }
     }
 }

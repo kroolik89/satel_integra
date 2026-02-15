@@ -163,7 +163,7 @@ impl SatelIntegra {
         read_timeout: Option<Duration>,
     ) -> Result<Vec<u8>, SatelError> {
         {
-            let state = self.state.read().unwrap();
+            let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
             let status = state.telemetry.status;
             let can_exchange = status == ConnectionStatus::Connected || 
                 (status == ConnectionStatus::ConnectionLost && self.config.auto_reconnect);
@@ -211,7 +211,7 @@ impl SatelIntegra {
         let version = process_integra_version(&response[1..])?;
 
         {
-            let mut state = self.state.write().unwrap();
+            let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
             state.integra_version = Some(version.clone());
         }
 
@@ -226,9 +226,9 @@ impl SatelIntegra {
     }
 
     /// Zwraca informacje o wersji centrali przechowywane w stanie.
-    pub fn get_cached_version(&self) -> Option<IntegraVersion> {
-        let state = self.state.read().unwrap();
-        state.integra_version.clone()
+    pub fn get_cached_version(&self) -> Result<Option<IntegraVersion>, SatelError> {
+        let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
+        Ok(state.integra_version.clone())
     }
 
     /// Pobiera nazwę wejścia (zony) z centrali.
@@ -255,24 +255,27 @@ impl SatelIntegra {
             return Err(SatelError::InvalidFrame);
         }
 
-        let (id, zone_name) = process_zone_name(&response[1..]).map_err(|e| {
+        let (id, s_name) = process_zone_name(&response[1..]).map_err(|e| {
             tracing::error!("Błąd podczas przetwarzania nazwy wejścia {}: {:?}", zone_id, e);
             e
         })?;
 
         {
-            let mut state = self.state.write().unwrap();
-            state.zone_names.insert(id, zone_name.clone());
+            let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+            if let Some(zone) = state.zones.get_mut((id.wrapping_sub(1) % 256) as usize) {
+                zone.zone_name = s_name.name.clone();
+                zone.zone_name_read_at = s_name.read_at;
+            }
         }
 
-        tracing::info!("Pobrano nazwę wejścia {}: {}", id, zone_name.name);
-        Ok(zone_name)
+        tracing::info!("Pobrano nazwę wejścia {}: {}", id, s_name.name);
+        Ok(s_name)
     }
 
     /// Pobiera nazwę wejścia z cache.
-    pub fn get_cached_zone_name(&self, zone_id: u16) -> Option<ZoneName> {
-        let state = self.state.read().unwrap();
-        state.zone_names.get(&zone_id).cloned()
+    pub fn get_cached_zone_name(&self, zone_id: u16) -> Result<Option<ZoneName>, SatelError> {
+        let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
+        Ok(state.zones.get((zone_id.wrapping_sub(1) % 256) as usize).map(|z| z.to_zone_name()))
     }
 
     /// Pobiera nazwę wyjścia z centrali.
@@ -299,24 +302,27 @@ impl SatelIntegra {
             return Err(SatelError::InvalidFrame);
         }
 
-        let (id, output_name) = process_output_name(&response[1..]).map_err(|e| {
+        let (id, s_name) = process_output_name(&response[1..]).map_err(|e| {
             tracing::error!("Błąd podczas przetwarzania nazwy wyjścia {}: {:?}", output_id, e);
             e
         })?;
 
         {
-            let mut state = self.state.write().unwrap();
-            state.output_names.insert(id, output_name.clone());
+            let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+            if let Some(output) = state.outputs.get_mut((id.wrapping_sub(1) % 256) as usize) {
+                output.name = s_name.name.clone();
+                output.name_read_at = s_name.read_at;
+            }
         }
 
-        tracing::info!("Pobrano nazwę wyjścia {}: {}", id, output_name.name);
-        Ok(output_name)
+        tracing::info!("Pobrano nazwę wyjścia {}: {}", id, s_name.name);
+        Ok(s_name)
     }
 
     /// Pobiera nazwę wyjścia z cache.
-    pub fn get_cached_output_name(&self, output_id: u16) -> Option<OutputName> {
-        let state = self.state.read().unwrap();
-        state.output_names.get(&output_id).cloned()
+    pub fn get_cached_output_name(&self, output_id: u16) -> Result<Option<OutputName>, SatelError> {
+        let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
+        Ok(state.outputs.get((output_id.wrapping_sub(1) % 256) as usize).map(|o| o.to_output_name()))
     }
 
     /// Pobiera nazwę strefy (partycji) z centrali.
@@ -349,7 +355,7 @@ impl SatelIntegra {
         })?;
 
         {
-            let mut state = self.state.write().unwrap();
+            let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
             state.partition_names.insert(id, partition_name.clone());
         }
 
@@ -358,9 +364,9 @@ impl SatelIntegra {
     }
 
     /// Pobiera nazwę strefy z cache.
-    pub fn get_cached_partition_name(&self, partition_id: u16) -> Option<PartitionName> {
-        let state = self.state.read().unwrap();
-        state.partition_names.get(&partition_id).cloned()
+    pub fn get_cached_partition_name(&self, partition_id: u16) -> Result<Option<PartitionName>, SatelError> {
+        let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
+        Ok(state.partition_names.get(&partition_id).cloned())
     }
 
     /// Pobiera temperaturę wejścia (zony) z centrali.
@@ -376,47 +382,40 @@ impl SatelIntegra {
                 if !response.is_empty() && response[0] == SatelCommand::ReadZoneTemperature.to_byte() {
                     match process_zone_temperature(&response[1..]) {
                         Ok((id, temp)) => {
-                            let mut state = self.state.write().unwrap();
-                            let current = state.zone_temperatures.entry(id).or_insert(ZoneTemperature {
-                                zone_id: id,
-                                temperature: 0.0,
-                                read_at: Local::now(),
-                                status: crate::satel_integra_data::TemperatureSensorStatus::NoRead,
-                                timeout_errors_total: 0,
-                                sensor_errors_total: 0,
-                                timeout_errors_current: 0,
-                                sensor_errors_current: 0,
-                            });
-                            current.temperature = temp;
-                            current.read_at = Local::now();
+                            let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+                            let zone = state.zones.get_mut((id.wrapping_sub(1) % 256) as usize)
+                                .ok_or(SatelError::InvalidFrame)?;
+
+                            zone.temperature_value = temp;
+                            zone.temperature_read_at = Local::now();
                             
                             // Logika: NoRead -> Ok
-                            if current.status == crate::satel_integra_data::TemperatureSensorStatus::NoRead {
-                                current.status = crate::satel_integra_data::TemperatureSensorStatus::Ok;
+                            if zone.temperature_status == crate::satel_integra_data::TemperatureSensorStatus::NoRead {
+                                zone.temperature_status = crate::satel_integra_data::TemperatureSensorStatus::Ok;
                             }
 
                             // Dekrementacja liczników current
-                            if current.timeout_errors_current > 0 {
-                                current.timeout_errors_current -= 1;
+                            if zone.temperature_timeout_errors_current > 0 {
+                                zone.temperature_timeout_errors_current -= 1;
                             }
-                            if current.sensor_errors_current > 0 {
-                                current.sensor_errors_current -= 1;
+                            if zone.temperature_sensor_errors_current > 0 {
+                                zone.temperature_sensor_errors_current -= 1;
                             }
 
                             tracing::info!("Pobrano temperaturę wejścia {}: {}°C", id, temp);
-                            return Ok(current.clone());
+                            return Ok(zone.to_zone_temperature());
                         }
                         Err(e) => {
-                            self.update_temp_error(zone_id, &e);
+                            self.update_temp_error(zone_id, &e)?;
                             return Err(e);
                         }
                     }
                 }
-                self.update_temp_error(zone_id, &SatelError::InvalidFrame);
+                self.update_temp_error(zone_id, &SatelError::InvalidFrame)?;
                 Err(SatelError::InvalidFrame)
             }
             Err(e) => {
-                self.update_temp_error(zone_id, &e);
+                self.update_temp_error(zone_id, &e)?;
                 match e {
                     SatelError::Timeout => Err(SatelError::TemperatureNotSupportedOrTimeOut),
                     _ => Err(e),
@@ -425,37 +424,30 @@ impl SatelIntegra {
         }
     }
 
-    fn update_temp_error(&self, zone_id: u16, error: &SatelError) {
-        let mut state = self.state.write().unwrap();
-        let entry = state.zone_temperatures.entry(zone_id).or_insert(ZoneTemperature {
-            zone_id,
-            temperature: 0.0,
-            read_at: Local::now(),
-            status: crate::satel_integra_data::TemperatureSensorStatus::NoRead,
-            timeout_errors_total: 0,
-            sensor_errors_total: 0,
-            timeout_errors_current: 0,
-            sensor_errors_current: 0,
-        });
+    fn update_temp_error(&self, zone_id: u16, error: &SatelError) -> Result<(), SatelError> {
+        let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+        let zone = state.zones.get_mut((zone_id.wrapping_sub(1) % 256) as usize)
+            .ok_or(SatelError::InvalidFrame)?;
         
         match error {
             SatelError::Timeout | SatelError::TemperatureNotSupportedOrTimeOut => {
-                entry.timeout_errors_total += 1;
-                entry.timeout_errors_current += 1;
+                zone.temperature_timeout_errors_total += 1;
+                zone.temperature_timeout_errors_current += 1;
             },
             SatelError::TemperatureSensorError => {
-                entry.sensor_errors_total += 1;
-                entry.sensor_errors_current += 1;
+                zone.temperature_sensor_errors_total += 1;
+                zone.temperature_sensor_errors_current += 1;
             },
             _ => {}
         }
-        entry.read_at = Local::now();
+        zone.temperature_read_at = Local::now();
+        Ok(())
     }
 
     /// Pobiera temperaturę wejścia z cache.
     pub fn get_cached_zone_temperature(&self, zone_id: u16) -> Result<Option<ZoneTemperature>, SatelError> {
         let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
-        Ok(state.zone_temperatures.get(&zone_id).cloned())
+        Ok(state.zones.get((zone_id.wrapping_sub(1) % 256) as usize).map(|z| z.to_zone_temperature()))
     }
 
     /// Pobiera temperaturę wejścia z mechanizmem blokowania wadliwych czujników.
@@ -468,30 +460,33 @@ impl SatelIntegra {
         }
 
         // 2. Pobranie aktualnego stanu z cache (bezpieczna obsługa locka)
-        let cached_info = self.get_cached_zone_temperature(zone_id)?;
+        let zone_info = {
+            let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
+            state.zones.get((zone_id.wrapping_sub(1) % 256) as usize).cloned()
+        };
 
-        if let Some(info) = cached_info {
+        if let Some(info) = zone_info {
             // A) Jeśli stan jest już zablokowany (inny niż Ok lub NoRead)
-            if info.status != TemperatureSensorStatus::Ok && info.status != TemperatureSensorStatus::NoRead {
+            if info.temperature_status != TemperatureSensorStatus::Ok && info.temperature_status != TemperatureSensorStatus::NoRead {
                 return Err(SatelError::TempTooManyErrors);
             }
 
             // B) Sprawdzenie progów na licznikach bieżących (current)
-            if info.timeout_errors_current >= self.config.temp_max_timeout_errors {
+            if info.temperature_timeout_errors_current >= self.config.temp_max_timeout_errors {
                 {
                     let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
-                    if let Some(entry) = state.zone_temperatures.get_mut(&zone_id) {
-                        entry.status = TemperatureSensorStatus::SensorMissing;
+                    if let Some(zone) = state.zones.get_mut((zone_id.wrapping_sub(1) % 256) as usize) {
+                        zone.temperature_status = TemperatureSensorStatus::SensorMissing;
                     }
                 }
                 return Err(SatelError::TempTooManyErrors);
             }
 
-            if info.sensor_errors_current >= self.config.temp_max_sensor_errors {
+            if info.temperature_sensor_errors_current >= self.config.temp_max_sensor_errors {
                 {
                     let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
-                    if let Some(entry) = state.zone_temperatures.get_mut(&zone_id) {
-                        entry.status = TemperatureSensorStatus::CommunicationError;
+                    if let Some(zone) = state.zones.get_mut((zone_id.wrapping_sub(1) % 256) as usize) {
+                        zone.temperature_status = TemperatureSensorStatus::CommunicationError;
                     }
                 }
                 return Err(SatelError::TempTooManyErrors);

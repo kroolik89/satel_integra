@@ -11,12 +11,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             host: "10.20.30.5".to_string(),
             port: 7094,
         },
-        read_timeout_ms: 2000,
-        write_timeout_ms: 500,
-        temp_read_timeout_ms: 6000,
-        buffer_timeout_ms: 10000,
-        user_code: Some("123456".to_string()), 
-        auto_reconnect: true,
+        user_code: Some("123456".to_string()),
+        ..Config::default()
     };
 
     // 2. Tworzenie instancji

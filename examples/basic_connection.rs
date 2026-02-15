@@ -8,18 +8,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let host = "10.20.30.5";
     let port = 7094;
 
-    // Konfiguracja z nowymi timeoutami w ms
+    // Konfiguracja z użyciem wartości domyślnych (Config::default())
     let config = Config {
         connection: ConnectionConfig::Tcp {
             host: host.to_string(),
             port,
         },
-        read_timeout_ms: 2000,
-        write_timeout_ms: 500,
-        temp_read_timeout_ms: 6000,
-        buffer_timeout_ms: 10000,
         user_code: Some("123456".to_string()),
-        auto_reconnect: true,
+        ..Config::default()
     };
 
     println!("Inicjalizacja połączenia z {}:{}...", host, port);
