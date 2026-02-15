@@ -1,7 +1,9 @@
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
+use chrono::{DateTime, Local};
 
 // --- Nowe Struktury Konfiguracyjne ---
 
@@ -11,13 +13,21 @@ pub struct Config {
     /// Konfiguracja metody połączenia (TCP lub UART).
     pub connection: ConnectionConfig,
 
-    /// Czas oczekiwania na odczyt danych w sekundach.
-    #[serde(default = "default_read_timeout")]
-    pub read_timeout: u64,
+    /// Czas oczekiwania na odczyt danych w milisekundach.
+    #[serde(default = "default_read_timeout_ms")]
+    pub read_timeout_ms: u64,
 
-    /// Czas oczekiwania na zapis danych w sekundach.
-    #[serde(default = "default_write_timeout")]
-    pub write_timeout: u64,
+    /// Czas oczekiwania na zapis danych w milisekundach.
+    #[serde(default = "default_write_timeout_ms")]
+    pub write_timeout_ms: u64,
+
+    /// Czas oczekiwania na odczyt temperatury w milisekundach.
+    #[serde(default = "default_temp_read_timeout_ms")]
+    pub temp_read_timeout_ms: u64,
+
+    /// Maksymalny czas oczekiwania wiadomości w buforze kolejki w milisekundach.
+    #[serde(default = "default_buffer_timeout_ms")]
+    pub buffer_timeout_ms: u64,
 
     /// Opcjonalny kod użytkownika potrzebny do niektórych operacji.
     pub user_code: Option<String>,
@@ -25,11 +35,38 @@ pub struct Config {
     /// Czy włączyć automatyczne ponowne połączenie.
     #[serde(default = "default_auto_reconnect")]
     pub auto_reconnect: bool,
+
+    /// Czy blokować odczyty z wadliwych czujników temperatury.
+    #[serde(default = "default_temp_blocking_enabled")]
+    pub temp_blocking_enabled: bool,
+
+    /// Maksymalna liczba błędów braku czujnika / timeout przed zablokowaniem.
+    #[serde(default = "default_temp_max_timeout_errors")]
+    pub temp_max_timeout_errors: u32,
+
+    /// Maksymalna liczba błędów czujnika raportowanych przez Satel przed zablokowaniem.
+    #[serde(default = "default_temp_max_sensor_errors")]
+    pub temp_max_sensor_errors: u32,
 }
 
 /// Domyślna wartość dla automatycznego ponownego połączenia.
 fn default_auto_reconnect() -> bool {
     true
+}
+
+/// Domyślna wartość dla blokowania wadliwych czujników.
+fn default_temp_blocking_enabled() -> bool {
+    true
+}
+
+/// Domyślna wartość dla max timeoutów.
+fn default_temp_max_timeout_errors() -> u32 {
+    4
+}
+
+/// Domyślna wartość dla max błędów czujnika.
+fn default_temp_max_sensor_errors() -> u32 {
+    10
 }
 
 /// Konfiguracja metody połączenia.
@@ -51,14 +88,24 @@ fn default_baud_rate() -> u32 {
     19200
 }
 
-/// Domyślna wartość dla timeoutu odczytu.
-fn default_read_timeout() -> u64 {
-    5
+/// Domyślna wartość dla timeoutu odczytu (ms).
+fn default_read_timeout_ms() -> u64 {
+    2000
 }
 
-/// Domyślna wartość dla timeoutu zapisu.
-fn default_write_timeout() -> u64 {
-    5
+/// Domyślna wartość dla timeoutu zapisu (ms).
+fn default_write_timeout_ms() -> u64 {
+    500
+}
+
+/// Domyślna wartość dla timeoutu odczytu temperatury (ms).
+fn default_temp_read_timeout_ms() -> u64 {
+    2000
+}
+
+/// Domyślna wartość dla timeoutu bufora (ms).
+fn default_buffer_timeout_ms() -> u64 {
+    10000
 }
 
 
@@ -117,11 +164,62 @@ impl ConnectionTelemetry {
     }
 }
 
+/// Informacje o wersji centrali Integra.
+#[derive(Debug, Clone)]
+pub struct IntegraVersion {
+    pub model: String,
+    pub firmware_version: String,
+    pub language: String,
+    pub stored_in_flash: bool,
+    pub io_count: u16,
+    pub read_at: DateTime<Local>,
+}
+
+/// Nazwa wejścia/wyjścia/strefy z datą odczytu.
+#[derive(Debug, Clone)]
+pub struct SatelName {
+    pub name: String,
+    pub read_at: DateTime<Local>,
+}
+
+/// Status czujnika temperatury.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TemperatureSensorStatus {
+    #[default]
+    NoRead,             // Brak odczytu
+    Ok,                 // Sprawny
+    SensorMissing,      // Brak czujnika (Timeout)
+    CommunicationError, // Błąd komunikacji (0xFFFF)
+}
+
+/// Temperatura z wejścia z datą odczytu, statusem i licznikami błędów.
+#[derive(Debug, Clone)]
+pub struct ZoneTemperature {
+    pub zone_id: u16,
+    pub temperature: f32,
+    pub read_at: DateTime<Local>,
+    pub status: TemperatureSensorStatus,
+    pub timeout_errors_total: u32,   // 1) Całkowity licznik timeoutów
+    pub sensor_errors_total: u32,    // 2) Całkowity licznik błędów 0xFFFF
+    pub timeout_errors_current: u32, // 3) Obliczany (zmniejszany przy sukcesie)
+    pub sensor_errors_current: u32,  // 4) Obliczany (zmniejszany przy sukcesie)
+}
+
+/// Aliasy dla czytelności
+pub type ZoneName = SatelName;
+pub type OutputName = SatelName;
+pub type PartitionName = SatelName;
+
 /// Struktura przechowująca współdzielony stan połączenia.
 #[derive(Debug)]
 pub struct SatelState {
     pub connection_type: Option<ConnectionType>,
     pub telemetry: ConnectionTelemetry,
+    pub integra_version: Option<IntegraVersion>,
+    pub zone_names: HashMap<u16, ZoneName>,
+    pub output_names: HashMap<u16, OutputName>,
+    pub partition_names: HashMap<u16, PartitionName>,
+    pub zone_temperatures: HashMap<u16, ZoneTemperature>,
 }
 
 impl SatelState {
@@ -129,6 +227,11 @@ impl SatelState {
         Self {
             connection_type: None,
             telemetry: ConnectionTelemetry::new(),
+            integra_version: None,
+            zone_names: HashMap::new(),
+            output_names: HashMap::new(),
+            partition_names: HashMap::new(),
+            zone_temperatures: HashMap::new(),
         }
     }
 }
@@ -239,7 +342,6 @@ impl SatelCommand {
     }
 
     pub fn from_byte(b: u8) -> Option<Self> {
-        // ... (implementacja from_byte bez zmian)
         match b {
             0x00 => Some(Self::ZonesViolation),
             0x01 => Some(Self::ZonesTamper),

@@ -1,7 +1,12 @@
 use crate::satel_integra_data::{
-    Config, ConnectionConfig, ConnectionStatus, ConnectionType, SatelState, SatelStateHandle,
+    Config, ConnectionConfig, ConnectionStatus, ConnectionType, IntegraVersion, SatelCommand,
+    SatelState, SatelStateHandle, ZoneName, OutputName, PartitionName, ZoneTemperature,
+};
+use crate::satel_integra_process::{
+    process_integra_version, process_zone_name, process_output_name, process_partition_name, process_zone_temperature
 };
 use bytes::{Buf, BytesMut};
+use chrono::Local;
 use futures::{SinkExt, StreamExt};
 use std::io;
 use std::sync::atomic::Ordering;
@@ -75,6 +80,14 @@ pub enum SatelError {
     WorkerDropped,
     #[error("Połączenie/Worker zostało już uruchomione")]
     AlreadyConnected,
+    #[error("Błąd czujnika temperatury (0xFFFF)")]
+    TemperatureSensorError,
+    #[error("Prawdopodobny brak czujnika temperatury lub TimeOut")]
+    TemperatureNotSupportedOrTimeOut,
+    #[error("Zbyt wiele błędów odczytu czujnika temperatury - odczyt zablokowany")]
+    TempTooManyErrors,
+    #[error("Stan wewnętrzny biblioteki został uszkodzony (poisoned lock)")]
+    StatePoisoned,
 }
 
 impl SatelIntegra {
@@ -168,10 +181,10 @@ impl SatelIntegra {
 
         let msg = InternalMessage::Exchange {
             data,
-            write_timeout: write_timeout.unwrap_or(Duration::from_secs(self.config.write_timeout)),
-            read_timeout: read_timeout.unwrap_or(Duration::from_secs(self.config.read_timeout)),
+            write_timeout: write_timeout.unwrap_or(Duration::from_millis(self.config.write_timeout_ms)),
+            read_timeout: read_timeout.unwrap_or(Duration::from_millis(self.config.read_timeout_ms)),
             created_at: Instant::now(),
-            max_queue_time: Duration::from_secs(30), // Domyślny TTL wiadomości w kolejce
+            max_queue_time: Duration::from_millis(self.config.buffer_timeout_ms),
             response_tx,
         };
 
@@ -181,6 +194,312 @@ impl SatelIntegra {
             .map_err(|_| SatelError::WorkerDropped)?;
 
         response_rx.await.map_err(|_| SatelError::WorkerDropped)?
+    }
+
+    /// Pobiera informacje o wersji centrali.
+    pub async fn get_integra_version(&self) -> Result<IntegraVersion, SatelError> {
+        tracing::info!("Pobieranie wersji centrali...");
+
+        let cmd = vec![SatelCommand::IntegraVersion.to_byte()];
+        let response = self.exchange(cmd, None, None).await?;
+
+        if response.is_empty() || response[0] != SatelCommand::IntegraVersion.to_byte() {
+            tracing::error!("Otrzymano nieprawidłową odpowiedź na zapytanie o wersję");
+            return Err(SatelError::InvalidFrame);
+        }
+
+        let version = process_integra_version(&response[1..])?;
+
+        {
+            let mut state = self.state.write().unwrap();
+            state.integra_version = Some(version.clone());
+        }
+
+        tracing::info!(
+            "Pobrano wersję centrali: {} (v{}, język: {})",
+            version.model,
+            version.firmware_version,
+            version.language
+        );
+
+        Ok(version)
+    }
+
+    /// Zwraca informacje o wersji centrali przechowywane w stanie.
+    pub fn get_cached_version(&self) -> Option<IntegraVersion> {
+        let state = self.state.read().unwrap();
+        state.integra_version.clone()
+    }
+
+    /// Pobiera nazwę wejścia (zony) z centrali.
+    pub async fn get_zone_name(&self, zone_id: u16) -> Result<ZoneName, SatelError> {
+        tracing::info!("Pobieranie nazwy wejścia {}", zone_id);
+
+        let device_type: u8 = 1; // 1 = zone
+        let device_id: u8 = if zone_id == 256 { 0 } else { zone_id as u8 };
+        
+        let cmd = vec![SatelCommand::ReadDeviceName.to_byte(), device_type, device_id];
+        let response = self.exchange(cmd, None, None).await?;
+
+        if !response.is_empty() && response[0] == SatelCommand::ResultCode.to_byte() {
+             tracing::error!("Centrala zwróciła błąd (0xEF) dla nazwy wejścia {}: {:?}", zone_id, response.get(1));
+             return Err(SatelError::InvalidFrame);
+        }
+
+        if response.is_empty() || response[0] != SatelCommand::ReadDeviceName.to_byte() {
+            tracing::error!(
+                "Nieprawidłowy bajt komendy w odpowiedzi dla wejścia {}. Oczekiwano: EE, otrzymano: {:02X?}",
+                zone_id,
+                response.get(0)
+            );
+            return Err(SatelError::InvalidFrame);
+        }
+
+        let (id, zone_name) = process_zone_name(&response[1..]).map_err(|e| {
+            tracing::error!("Błąd podczas przetwarzania nazwy wejścia {}: {:?}", zone_id, e);
+            e
+        })?;
+
+        {
+            let mut state = self.state.write().unwrap();
+            state.zone_names.insert(id, zone_name.clone());
+        }
+
+        tracing::info!("Pobrano nazwę wejścia {}: {}", id, zone_name.name);
+        Ok(zone_name)
+    }
+
+    /// Pobiera nazwę wejścia z cache.
+    pub fn get_cached_zone_name(&self, zone_id: u16) -> Option<ZoneName> {
+        let state = self.state.read().unwrap();
+        state.zone_names.get(&zone_id).cloned()
+    }
+
+    /// Pobiera nazwę wyjścia z centrali.
+    pub async fn get_output_name(&self, output_id: u16) -> Result<OutputName, SatelError> {
+        tracing::info!("Pobieranie nazwy wyjścia {}", output_id);
+
+        let device_type: u8 = 4; // 4 = output
+        let device_id: u8 = if output_id == 256 { 0 } else { output_id as u8 };
+        
+        let cmd = vec![SatelCommand::ReadDeviceName.to_byte(), device_type, device_id];
+        let response = self.exchange(cmd, None, None).await?;
+
+        if !response.is_empty() && response[0] == SatelCommand::ResultCode.to_byte() {
+             tracing::error!("Centrala zwróciła błąd (0xEF) dla nazwy wyjścia {}: {:?}", output_id, response.get(1));
+             return Err(SatelError::InvalidFrame);
+        }
+
+        if response.is_empty() || response[0] != SatelCommand::ReadDeviceName.to_byte() {
+            tracing::error!(
+                "Nieprawidłowy bajt komendy w odpowiedzi dla wyjścia {}. Oczekiwano: EE, otrzymano: {:02X?}",
+                output_id,
+                response.get(0)
+            );
+            return Err(SatelError::InvalidFrame);
+        }
+
+        let (id, output_name) = process_output_name(&response[1..]).map_err(|e| {
+            tracing::error!("Błąd podczas przetwarzania nazwy wyjścia {}: {:?}", output_id, e);
+            e
+        })?;
+
+        {
+            let mut state = self.state.write().unwrap();
+            state.output_names.insert(id, output_name.clone());
+        }
+
+        tracing::info!("Pobrano nazwę wyjścia {}: {}", id, output_name.name);
+        Ok(output_name)
+    }
+
+    /// Pobiera nazwę wyjścia z cache.
+    pub fn get_cached_output_name(&self, output_id: u16) -> Option<OutputName> {
+        let state = self.state.read().unwrap();
+        state.output_names.get(&output_id).cloned()
+    }
+
+    /// Pobiera nazwę strefy (partycji) z centrali.
+    pub async fn get_partition_name(&self, partition_id: u16) -> Result<PartitionName, SatelError> {
+        tracing::info!("Pobieranie nazwy strefy {}", partition_id);
+
+        let device_type: u8 = 0; // 0 = partition/zone
+        let device_id: u8 = partition_id as u8;
+        
+        let cmd = vec![SatelCommand::ReadDeviceName.to_byte(), device_type, device_id];
+        let response = self.exchange(cmd, None, None).await?;
+
+        if !response.is_empty() && response[0] == SatelCommand::ResultCode.to_byte() {
+             tracing::error!("Centrala zwróciła błąd (0xEF) dla nazwy strefy {}: {:?}", partition_id, response.get(1));
+             return Err(SatelError::InvalidFrame);
+        }
+
+        if response.is_empty() || response[0] != SatelCommand::ReadDeviceName.to_byte() {
+            tracing::error!(
+                "Nieprawidłowy bajt komendy w odpowiedzi dla strefy {}. Oczekiwano: EE, otrzymano: {:02X?}",
+                partition_id,
+                response.get(0)
+            );
+            return Err(SatelError::InvalidFrame);
+        }
+
+        let (id, partition_name) = process_partition_name(&response[1..]).map_err(|e| {
+            tracing::error!("Błąd podczas przetwarzania nazwy strefy {}: {:?}", partition_id, e);
+            e
+        })?;
+
+        {
+            let mut state = self.state.write().unwrap();
+            state.partition_names.insert(id, partition_name.clone());
+        }
+
+        tracing::info!("Pobrano nazwę strefy {}: {}", id, partition_name.name);
+        Ok(partition_name)
+    }
+
+    /// Pobiera nazwę strefy z cache.
+    pub fn get_cached_partition_name(&self, partition_id: u16) -> Option<PartitionName> {
+        let state = self.state.read().unwrap();
+        state.partition_names.get(&partition_id).cloned()
+    }
+
+    /// Pobiera temperaturę wejścia (zony) z centrali.
+    pub async fn get_zone_temperature(&self, zone_id: u16) -> Result<ZoneTemperature, SatelError> {
+        tracing::info!("Pobieranie temperatury wejścia {}", zone_id);
+
+        let cmd = vec![SatelCommand::ReadZoneTemperature.to_byte(), if zone_id == 256 { 0 } else { zone_id as u8 }];
+        
+        let response_result = self.exchange(cmd, None, Some(Duration::from_millis(self.config.temp_read_timeout_ms))).await;
+
+        match response_result {
+            Ok(response) => {
+                if !response.is_empty() && response[0] == SatelCommand::ReadZoneTemperature.to_byte() {
+                    match process_zone_temperature(&response[1..]) {
+                        Ok((id, temp)) => {
+                            let mut state = self.state.write().unwrap();
+                            let current = state.zone_temperatures.entry(id).or_insert(ZoneTemperature {
+                                zone_id: id,
+                                temperature: 0.0,
+                                read_at: Local::now(),
+                                status: crate::satel_integra_data::TemperatureSensorStatus::NoRead,
+                                timeout_errors_total: 0,
+                                sensor_errors_total: 0,
+                                timeout_errors_current: 0,
+                                sensor_errors_current: 0,
+                            });
+                            current.temperature = temp;
+                            current.read_at = Local::now();
+                            
+                            // Logika: NoRead -> Ok
+                            if current.status == crate::satel_integra_data::TemperatureSensorStatus::NoRead {
+                                current.status = crate::satel_integra_data::TemperatureSensorStatus::Ok;
+                            }
+
+                            // Dekrementacja liczników current
+                            if current.timeout_errors_current > 0 {
+                                current.timeout_errors_current -= 1;
+                            }
+                            if current.sensor_errors_current > 0 {
+                                current.sensor_errors_current -= 1;
+                            }
+
+                            tracing::info!("Pobrano temperaturę wejścia {}: {}°C", id, temp);
+                            return Ok(current.clone());
+                        }
+                        Err(e) => {
+                            self.update_temp_error(zone_id, &e);
+                            return Err(e);
+                        }
+                    }
+                }
+                self.update_temp_error(zone_id, &SatelError::InvalidFrame);
+                Err(SatelError::InvalidFrame)
+            }
+            Err(e) => {
+                self.update_temp_error(zone_id, &e);
+                match e {
+                    SatelError::Timeout => Err(SatelError::TemperatureNotSupportedOrTimeOut),
+                    _ => Err(e),
+                }
+            }
+        }
+    }
+
+    fn update_temp_error(&self, zone_id: u16, error: &SatelError) {
+        let mut state = self.state.write().unwrap();
+        let entry = state.zone_temperatures.entry(zone_id).or_insert(ZoneTemperature {
+            zone_id,
+            temperature: 0.0,
+            read_at: Local::now(),
+            status: crate::satel_integra_data::TemperatureSensorStatus::NoRead,
+            timeout_errors_total: 0,
+            sensor_errors_total: 0,
+            timeout_errors_current: 0,
+            sensor_errors_current: 0,
+        });
+        
+        match error {
+            SatelError::Timeout | SatelError::TemperatureNotSupportedOrTimeOut => {
+                entry.timeout_errors_total += 1;
+                entry.timeout_errors_current += 1;
+            },
+            SatelError::TemperatureSensorError => {
+                entry.sensor_errors_total += 1;
+                entry.sensor_errors_current += 1;
+            },
+            _ => {}
+        }
+        entry.read_at = Local::now();
+    }
+
+    /// Pobiera temperaturę wejścia z cache.
+    pub fn get_cached_zone_temperature(&self, zone_id: u16) -> Result<Option<ZoneTemperature>, SatelError> {
+        let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
+        Ok(state.zone_temperatures.get(&zone_id).cloned())
+    }
+
+    /// Pobiera temperaturę wejścia z mechanizmem blokowania wadliwych czujników.
+    pub async fn get_zone_temperature_with_blocking(&self, zone_id: u16) -> Result<ZoneTemperature, SatelError> {
+        use crate::satel_integra_data::TemperatureSensorStatus;
+
+        // 1. Sprawdzenie czy blokowanie jest w ogóle włączone
+        if !self.config.temp_blocking_enabled {
+            return self.get_zone_temperature(zone_id).await;
+        }
+
+        // 2. Pobranie aktualnego stanu z cache (bezpieczna obsługa locka)
+        let cached_info = self.get_cached_zone_temperature(zone_id)?;
+
+        if let Some(info) = cached_info {
+            // A) Jeśli stan jest już zablokowany (inny niż Ok lub NoRead)
+            if info.status != TemperatureSensorStatus::Ok && info.status != TemperatureSensorStatus::NoRead {
+                return Err(SatelError::TempTooManyErrors);
+            }
+
+            // B) Sprawdzenie progów na licznikach bieżących (current)
+            if info.timeout_errors_current >= self.config.temp_max_timeout_errors {
+                {
+                    let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+                    if let Some(entry) = state.zone_temperatures.get_mut(&zone_id) {
+                        entry.status = TemperatureSensorStatus::SensorMissing;
+                    }
+                }
+                return Err(SatelError::TempTooManyErrors);
+            }
+
+            if info.sensor_errors_current >= self.config.temp_max_sensor_errors {
+                {
+                    let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+                    if let Some(entry) = state.zone_temperatures.get_mut(&zone_id) {
+                        entry.status = TemperatureSensorStatus::CommunicationError;
+                    }
+                }
+                return Err(SatelError::TempTooManyErrors);
+            }
+        }
+
+        // 3. Jeśli przeszło przez filtry -> wywołaj właściwy odczyt
+        self.get_zone_temperature(zone_id).await
     }
 }
 
@@ -235,20 +554,17 @@ impl SatelWorker {
                 max_queue_time,
                 response_tx,
             } => {
-                // 1. Sprawdź TTL wiadomości
                 if created_at.elapsed() > max_queue_time {
                     tracing::info!("Odrzucono wiadomość z kolejki: przekroczono czas TTL ({:?})", max_queue_time);
                     let _ = response_tx.send(Err(SatelError::MessageExpired));
                     return;
                 }
 
-                // 2. Zapewnij połączenie
                 if let Err(e) = self.ensure_connected().await {
                     let _ = response_tx.send(Err(e));
                     return;
                 }
 
-                // 3. Wykonaj exchange
                 let result = self.perform_exchange(data, write_timeout, read_timeout).await;
                 let _ = response_tx.send(result);
             }
@@ -330,7 +646,7 @@ impl SatelWorker {
     }
 
     async fn connect(&mut self) -> Result<(), SatelError> {
-        let conn_timeout = Duration::from_secs(self.config.read_timeout);
+        let conn_timeout = Duration::from_millis(self.config.read_timeout_ms);
 
         tracing::info!("Podejmowanie próby połączenia z centralą...");
 
@@ -449,8 +765,6 @@ impl SatelWorker {
     }
 }
 
-// --- Koder/Dekoder (bez zmian) ---
-
 fn calculate_crc(data: &[u8]) -> u16 {
     let mut crc: u16 = 0x147A;
     for &byte in data {
@@ -470,19 +784,16 @@ impl Decoder for SatelCodec {
     type Error = io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        // 1. Synchronizacja: Szukamy początku ramki [FE, FE]
         loop {
             if src.len() < 2 {
                 return Ok(None);
             }
             if let Some(pos) = src.windows(2).position(|w| w == [0xFE, 0xFE]) {
                 if pos > 0 {
-                    src.advance(pos); // Usuwamy wszystko przed FE FE
+                    src.advance(pos);
                 }
-                break; // Znaleźliśmy początek
+                break;
             } else {
-                // Nie ma FE FE w całym buforze. 
-                // Zostawiamy tylko ostatni bajt (jeśli to 0xFE), resztę usuwamy.
                 let to_advance = if src.last() == Some(&0xFE) {
                     src.len() - 1
                 } else {
@@ -493,12 +804,9 @@ impl Decoder for SatelCodec {
             }
         }
 
-        // 2. Szukamy końca ramki [FE, 0D]
         if let Some(pos) = src.windows(2).position(|window| window == [0xFE, 0x0D]) {
-            // Wycinamy całą ramkę (z nagłówkiem i stopką) z głównego bufora
             let frame_raw = src.split_to(pos + 2).to_vec();
 
-            // 3. Unescape i wyciąganie danych (pomiń FE FE na początku i FE 0D na końcu)
             let mut data_with_crc = Vec::new();
             let mut i = 2;
             while i < frame_raw.len() - 2 {
@@ -512,11 +820,9 @@ impl Decoder for SatelCodec {
             }
 
             if data_with_crc.len() < 2 {
-                // Ramka zbyt krótka nawet na CRC, szukamy dalej (ramka już usunięta z src przez split_to)
                 return self.decode(src);
             }
 
-            // 4. Weryfikacja CRC
             let received_crc_low = data_with_crc.pop().unwrap();
             let received_crc_high = data_with_crc.pop().unwrap();
             let received_crc = u16::from_be_bytes([received_crc_high, received_crc_low]);
@@ -530,12 +836,9 @@ impl Decoder for SatelCodec {
                     "Invalid CRC. Got: {:04X}, calculated: {:04X}. Frame discarded.",
                     received_crc, calculated_crc
                 );
-                // CRC błędne, ale ramka już skonsumowana. Szukamy kolejnej w reszcie bufora.
                 return self.decode(src);
             }
         }
-
-        // Nie znaleźliśmy jeszcze końca ramki
         Ok(None)
     }
 }
