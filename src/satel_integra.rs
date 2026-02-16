@@ -733,19 +733,54 @@ impl SatelWorker {
     /// Główna pętla workera.
     pub async fn run(&mut self) {
         loop {
+            // Sprawdzamy stan połączenia przed selectem
+            let stream_active = self.stream.is_some();
+            
             tokio::select! {
                 // Obsługa przychodzących komunikatów
                 Some(msg) = self.rx.recv() => {
                     self.handle_message(msg).await;
                 }
                 
+                // Odbieranie danych Push gdy połączenie jest bezczynne
+                res = Self::receive_push_internal(self.stream.as_mut(), &self.config, &self.state), if stream_active => {
+                    if let Err(e) = res {
+                        tracing::error!("Błąd podczas odbierania danych Push: {:?}", e);
+                        self.stream = None; // Zamknij strumień przy błędzie I/O
+                    }
+                }
+
                 // Pasywne monitorowanie i próby połączenia w tle
-                _ = sleep(Duration::from_millis(100)), if self.stream.is_none() && self.config.auto_reconnect => {
+                _ = sleep(Duration::from_millis(100)), if !stream_active && self.config.auto_reconnect => {
                      if self.should_retry_connection() {
                          let _ = self.ensure_connected().await;
                      }
                 }
             }
+        }
+    }
+
+    /// Pomocnicza funkcja do odbierania push, aby uniknąć problemów z borrow checkerem na `self`
+    async fn receive_push_internal(
+        stream: Option<&mut FramedStream>, 
+        config: &Config, 
+        state_handle: &SatelStateHandle
+    ) -> Result<(), SatelError> {
+        let Some(stream) = stream else { return Ok(()); };
+
+        // Krótki timeout aby nie blokować pętli głównej
+        match timeout(Duration::from_millis(10), stream.next()).await {
+            Ok(Some(Ok(frame))) => {
+                {
+                    let state = state_handle.read().map_err(|_| SatelError::StatePoisoned)?;
+                    state.telemetry.bytes_received.fetch_add(frame.len(), Ordering::Relaxed);
+                }
+                Self::handle_auto_frame_internal(&frame, config, state_handle);
+                Ok(())
+            }
+            Ok(Some(Err(e))) => Err(SatelError::Io(e)),
+            Ok(None) => Err(SatelError::StreamClosed),
+            Err(_) => Ok(()), // Timeout - brak danych, to normalne
         }
     }
 
@@ -775,7 +810,8 @@ impl SatelWorker {
                     return;
                 }
 
-                let result = self.perform_exchange(data, write_timeout, read_timeout).await;
+                let cmd_byte = data.first().cloned().unwrap_or(0);
+                let result = self.perform_exchange(data, cmd_byte, write_timeout, read_timeout).await;
                 let _ = response_tx.send(result);
             }
             InternalMessage::Connect { response_tx } => {
@@ -804,6 +840,7 @@ impl SatelWorker {
     async fn perform_exchange(
         &mut self,
         data: Vec<u8>,
+        expected_cmd: u8,
         write_timeout: Duration,
         read_timeout: Duration,
     ) -> Result<Vec<u8>, SatelError> {
@@ -829,30 +866,43 @@ impl SatelWorker {
             }
         }
 
-        // Receive
-        match timeout(read_timeout, stream.next()).await {
-            Ok(Some(Ok(frame))) => {
-                self.state
-                    .read()
-                    .unwrap()
-                    .telemetry
-                    .bytes_received
-                    .fetch_add(frame.len(), Ordering::Relaxed);
-                Ok(frame)
-            }
-            Ok(Some(Err(e))) => {
-                self.set_connection_lost();
-                Err(SatelError::Io(e))
-            }
-            Ok(None) => {
-                self.set_connection_lost();
-                Err(SatelError::StreamClosed)
-            }
-            Err(_) => {
-                tracing::info!("Przekroczono czas oczekiwania na odpowiedź z centrali (timeout: {:?})", read_timeout);
-                Err(SatelError::Timeout)
+        // Receive with filtering Push notifications
+        let start = Instant::now();
+        while start.elapsed() < read_timeout {
+            let remaining = read_timeout.saturating_sub(start.elapsed());
+            match timeout(remaining, stream.next()).await {
+                Ok(Some(Ok(frame))) => {
+                    {
+                        let state = self.state.read().unwrap();
+                        state.telemetry.bytes_received.fetch_add(frame.len(), Ordering::Relaxed);
+                    }
+
+                    if frame.is_empty() { continue; }
+                    let frame_cmd = frame[0];
+
+                    // Jeśli to jest odpowiedź na naszą komendę lub błąd 0xEF -> zwracamy
+                    if frame_cmd == expected_cmd || frame_cmd == 0xEF {
+                        return Ok(frame);
+                    } else {
+                        // To jest ramka Push (np. 0x00) -> procesujemy ją w locie i czekamy dalej
+                        Self::handle_auto_frame_internal(&frame, &self.config, &self.state);
+                    }
+                }
+                Ok(Some(Err(e))) => {
+                    self.set_connection_lost();
+                    return Err(SatelError::Io(e));
+                }
+                Ok(None) => {
+                    self.set_connection_lost();
+                    return Err(SatelError::StreamClosed);
+                }
+                Err(_) => {
+                    tracing::info!("Przekroczono czas oczekiwania na odpowiedź z centrali (timeout: {:?})", read_timeout);
+                    return Err(SatelError::Timeout);
+                }
             }
         }
+        Err(SatelError::Timeout)
     }
 
     async fn connect(&mut self) -> Result<(), SatelError> {
@@ -971,6 +1021,47 @@ impl SatelWorker {
         let mut state = self.state.write().unwrap();
         if state.telemetry.status == ConnectionStatus::Connected {
             state.telemetry.status = ConnectionStatus::ConnectionLost;
+        }
+    }
+
+    /// Statyczna wersja procesowania, aby uniknąć problemów z borrow checkerem
+    fn handle_auto_frame_internal(frame: &[u8], config: &Config, state_handle: &SatelStateHandle) {
+        if frame.is_empty() { return; }
+        
+        match frame[0] {
+            0x00 => if let Ok(d) = process_zones_violation(frame, &config.io_violation_invert) {
+                let mut s = state_handle.write().unwrap();
+                for (i, &v) in d.states.iter().enumerate() {
+                    if let Some(z) = s.zones.get_mut(i) { z.violation_state = v; z.violation_read_at = d.read_at; }
+                }
+            },
+            0x01 => if let Ok(d) = process_zones_tamper(frame, &config.io_tamper_invert) {
+                let mut s = state_handle.write().unwrap();
+                for (i, &v) in d.states.iter().enumerate() {
+                    if let Some(z) = s.zones.get_mut(i) { z.tamper_state = v; z.tamper_read_at = d.read_at; }
+                }
+            },
+            0x02 => if let Ok(d) = process_zones_alarm(frame, &config.io_alarm_invert) {
+                let mut s = state_handle.write().unwrap();
+                for (i, &v) in d.states.iter().enumerate() {
+                    if let Some(z) = s.zones.get_mut(i) { z.alarm_state = v; z.alarm_read_at = d.read_at; }
+                }
+            },
+            0x17 => {
+                let data = &frame[1..];
+                if data.len() >= 16 {
+                    let mut s = state_handle.write().unwrap();
+                    for (byte_idx, &byte) in data.iter().take(32).enumerate() {
+                        for bit in 0..8 {
+                            let idx = byte_idx * 8 + bit;
+                            if let Some(_out) = s.outputs.get_mut(idx) {
+                                // tu można by aktualizować stan wyjścia
+                            }
+                        }
+                    }
+                }
+            },
+            _ => {}
         }
     }
 }
