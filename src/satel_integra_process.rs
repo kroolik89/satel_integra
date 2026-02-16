@@ -1,10 +1,14 @@
-use crate::satel_integra_data::{IntegraVersion, SatelName};
+use crate::satel_integra_data::{IntegraVersion, SatelName, ZonesTamperData, ZonesAlarmData, ZonesViolationData, ZonesTamperAlarmData, ZonesAlarmMemoryData, ZonesTamperAlarmMemoryData, ZonesBypassData, ZonesNoViolationTroubleData, ZonesLongViolationTroubleData};
 use crate::satel_integra::SatelError;
 use chrono::Local;
 
-/// Przetwarza dane otrzymane w odpowiedzi na komendę 0x7E (Wersja centrali).
-/// Oczekuje 14 bajtów danych (bez komendy 0x7E na początku).
-pub fn process_integra_version(data: &[u8]) -> Result<IntegraVersion, SatelError> {
+/// Przetwarza całą ramkę odpowiedzi na komendę 0x7E (Wersja centrali).
+pub fn process_integra_version(frame: &[u8]) -> Result<IntegraVersion, SatelError> {
+    if frame.is_empty() || frame[0] != 0x7E {
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let data = &frame[1..];
     if data.len() < 14 {
         return Err(SatelError::InvalidFrame);
     }
@@ -50,9 +54,14 @@ pub fn process_integra_version(data: &[u8]) -> Result<IntegraVersion, SatelError
     })
 }
 
-/// Przetwarza odpowiedź na komendę 0xEE (Read device name).
+/// Przetwarza całą ramkę odpowiedzi na komendę 0xEE (Read device name).
 /// Zwraca krotkę (Numer urządzenia, Dane nazwy).
-fn process_device_name(data: &[u8], expected_type: u8) -> Result<(u16, SatelName), SatelError> {
+fn process_device_name(frame: &[u8], expected_type: u8) -> Result<(u16, SatelName), SatelError> {
+    if frame.is_empty() || frame[0] != 0xEE {
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let data = &frame[1..];
     if data.len() < 19 {
         tracing::error!("Data too short for device name: {} bytes", data.len());
         return Err(SatelError::InvalidFrame);
@@ -97,9 +106,14 @@ pub fn process_output_name(data: &[u8]) -> Result<(u16, SatelName), SatelError> 
     process_device_name(data, 4)
 }
 
-/// Przetwarza odpowiedź na komendę 0x7D (Read zone temperature).
+/// Przetwarza całą ramkę odpowiedzi na komendę 0x7D (Read zone temperature).
 /// Zwraca krotkę (Numer wejścia, Temperatura).
-pub fn process_zone_temperature(data: &[u8]) -> Result<(u16, f32), SatelError> {
+pub fn process_zone_temperature(frame: &[u8]) -> Result<(u16, f32), SatelError> {
+    if frame.is_empty() || frame[0] != 0x7D {
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let data = &frame[1..];
     if data.len() < 3 {
         return Err(SatelError::InvalidFrame);
     }
@@ -115,4 +129,337 @@ pub fn process_zone_temperature(data: &[u8]) -> Result<(u16, f32), SatelError> {
     let temperature = (temp_raw as f32 * 0.5) - 55.0;
 
     Ok((zone_id, temperature))
+}
+
+/// Przetwarza całą ramkę odpowiedzi na komendę 0x01 (Zones tamper).
+/// Uwzględnia listę wejść, których stan ma zostać odwrócony.
+pub fn process_zones_tamper(frame: &[u8], invert_list: &[u16]) -> Result<ZonesTamperData, SatelError> {
+    if frame.is_empty() || frame[0] != 0x01 {
+        tracing::error!("Nieprawidłowy kod komendy w ramce sabotażu: {:02X?}", frame.get(0));
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let data = &frame[1..];
+    // Satel zwraca 16 (128 wejść) lub 32 (256 wejść) bajty danych
+    if data.len() < 16 {
+        tracing::error!("Dane sabotażu zbyt krótkie: {} bajtów", data.len());
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let mut states = Vec::with_capacity(data.len() * 8);
+    for (byte_idx, &byte) in data.iter().enumerate() {
+        for bit in 0..8 {
+            let zone_id = (byte_idx * 8 + bit + 1) as u16;
+            let raw_state = (byte & (1 << bit)) != 0;
+            
+            // Inwersja stanu jeśli zone_id znajduje się na liście invert_list
+            let final_state = if invert_list.contains(&zone_id) {
+                !raw_state
+            } else {
+                raw_state
+            };
+            states.push(final_state);
+        }
+    }
+
+    Ok(ZonesTamperData {
+        states,
+        read_at: Local::now(),
+    })
+}
+
+/// Przetwarza całą ramkę odpowiedzi na komendę 0x02 (Zones alarm).
+/// Uwzględnia listę wejść, których stan ma zostać odwrócony.
+pub fn process_zones_alarm(frame: &[u8], invert_list: &[u16]) -> Result<ZonesAlarmData, SatelError> {
+    if frame.is_empty() || frame[0] != 0x02 {
+        tracing::error!("Nieprawidłowy kod komendy w ramce alarmów: {:02X?}", frame.get(0));
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let data = &frame[1..];
+    // Satel zwraca 16 (128 wejść) lub 32 (256 wejść) bajty danych
+    if data.len() < 16 {
+        tracing::error!("Dane alarmów zbyt krótkie: {} bajtów", data.len());
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let mut states = Vec::with_capacity(data.len() * 8);
+    for (byte_idx, &byte) in data.iter().enumerate() {
+        for bit in 0..8 {
+            let zone_id = (byte_idx * 8 + bit + 1) as u16;
+            let raw_state = (byte & (1 << bit)) != 0;
+            
+            // Inwersja stanu jeśli zone_id znajduje się na liście invert_list
+            let final_state = if invert_list.contains(&zone_id) {
+                !raw_state
+            } else {
+                raw_state
+            };
+            states.push(final_state);
+        }
+    }
+
+    Ok(ZonesAlarmData {
+        states,
+        read_at: Local::now(),
+    })
+}
+
+/// Przetwarza całą ramkę odpowiedzi na komendę 0x00 (Zones violation).
+/// Uwzględnia listę wejść, których stan ma zostać odwrócony.
+pub fn process_zones_violation(frame: &[u8], invert_list: &[u16]) -> Result<ZonesViolationData, SatelError> {
+    if frame.is_empty() || frame[0] != 0x00 {
+        tracing::error!("Nieprawidłowy kod komendy w ramce naruszeń: {:02X?}", frame.get(0));
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let data = &frame[1..];
+    // Satel zwraca 16 (128 wejść) lub 32 (256 wejść) bajty danych
+    if data.len() < 16 {
+        tracing::error!("Dane naruszeń zbyt krótkie: {} bajtów", data.len());
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let mut states = Vec::with_capacity(data.len() * 8);
+    for (byte_idx, &byte) in data.iter().enumerate() {
+        for bit in 0..8 {
+            let zone_id = (byte_idx * 8 + bit + 1) as u16;
+            let raw_state = (byte & (1 << bit)) != 0;
+            
+            // Inwersja stanu jeśli zone_id znajduje się na liście invert_list
+            let final_state = if invert_list.contains(&zone_id) {
+                !raw_state
+            } else {
+                raw_state
+            };
+            states.push(final_state);
+        }
+    }
+
+    Ok(ZonesViolationData {
+        states,
+        read_at: Local::now(),
+    })
+}
+
+/// Przetwarza całą ramkę odpowiedzi na komendę 0x03 (Zones tamper alarm).
+/// Uwzględnia listę wejść, których stan ma zostać odwrócony.
+pub fn process_zones_tamper_alarm(frame: &[u8], invert_list: &[u16]) -> Result<ZonesTamperAlarmData, SatelError> {
+    if frame.is_empty() || frame[0] != 0x03 {
+        tracing::error!("Nieprawidłowy kod komendy w ramce alarmów sabotażowych: {:02X?}", frame.get(0));
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let data = &frame[1..];
+    // Satel zwraca 16 (128 wejść) lub 32 (256 wejść) bajty danych
+    if data.len() < 16 {
+        tracing::error!("Dane alarmów sabotażowych zbyt krótkie: {} bajtów", data.len());
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let mut states = Vec::with_capacity(data.len() * 8);
+    for (byte_idx, &byte) in data.iter().enumerate() {
+        for bit in 0..8 {
+            let zone_id = (byte_idx * 8 + bit + 1) as u16;
+            let raw_state = (byte & (1 << bit)) != 0;
+            
+            // Inwersja stanu jeśli zone_id znajduje się na liście invert_list
+            let final_state = if invert_list.contains(&zone_id) {
+                !raw_state
+            } else {
+                raw_state
+            };
+            states.push(final_state);
+        }
+    }
+
+    Ok(ZonesTamperAlarmData {
+        states,
+        read_at: Local::now(),
+    })
+}
+
+/// Przetwarza całą ramkę odpowiedzi na komendę 0x04 (Zones alarm memory).
+/// Uwzględnia listę wejść, których stan ma zostać odwrócony.
+pub fn process_zones_alarm_memory(frame: &[u8], invert_list: &[u16]) -> Result<ZonesAlarmMemoryData, SatelError> {
+    if frame.is_empty() || frame[0] != 0x04 {
+        tracing::error!("Nieprawidłowy kod komendy w ramce pamięci alarmów: {:02X?}", frame.get(0));
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let data = &frame[1..];
+    // Satel zwraca 16 (128 wejść) lub 32 (256 wejść) bajty danych
+    if data.len() < 16 {
+        tracing::error!("Dane pamięci alarmów zbyt krótkie: {} bajtów", data.len());
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let mut states = Vec::with_capacity(data.len() * 8);
+    for (byte_idx, &byte) in data.iter().enumerate() {
+        for bit in 0..8 {
+            let zone_id = (byte_idx * 8 + bit + 1) as u16;
+            let raw_state = (byte & (1 << bit)) != 0;
+            
+            // Inwersja stanu jeśli zone_id znajduje się na liście invert_list
+            let final_state = if invert_list.contains(&zone_id) {
+                !raw_state
+            } else {
+                raw_state
+            };
+            states.push(final_state);
+        }
+    }
+
+    Ok(ZonesAlarmMemoryData {
+        states,
+        read_at: Local::now(),
+    })
+}
+
+/// Przetwarza całą ramkę odpowiedzi na komendę 0x05 (Zones tamper alarm memory).
+/// Uwzględnia listę wejść, których stan ma zostać odwrócony.
+pub fn process_zones_tamper_alarm_memory(frame: &[u8], invert_list: &[u16]) -> Result<ZonesTamperAlarmMemoryData, SatelError> {
+    if frame.is_empty() || frame[0] != 0x05 {
+        tracing::error!("Nieprawidłowy kod komendy w ramce pamięci alarmów sabotażowych: {:02X?}", frame.get(0));
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let data = &frame[1..];
+    // Satel zwraca 16 (128 wejść) lub 32 (256 wejść) bajty danych
+    if data.len() < 16 {
+        tracing::error!("Dane pamięci alarmów sabotażowych zbyt krótkie: {} bajtów", data.len());
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let mut states = Vec::with_capacity(data.len() * 8);
+    for (byte_idx, &byte) in data.iter().enumerate() {
+        for bit in 0..8 {
+            let zone_id = (byte_idx * 8 + bit + 1) as u16;
+            let raw_state = (byte & (1 << bit)) != 0;
+            
+            // Inwersja stanu jeśli zone_id znajduje się na liście invert_list
+            let final_state = if invert_list.contains(&zone_id) {
+                !raw_state
+            } else {
+                raw_state
+            };
+            states.push(final_state);
+        }
+    }
+
+    Ok(ZonesTamperAlarmMemoryData {
+        states,
+        read_at: Local::now(),
+    })
+}
+
+/// Przetwarza całą ramkę odpowiedzi na komendę 0x07 (Zones 'no violation' trouble).
+/// Uwzględnia listę wejść, których stan ma zostać odwrócony.
+pub fn process_zones_no_violation_trouble(frame: &[u8], invert_list: &[u16]) -> Result<ZonesNoViolationTroubleData, SatelError> {
+    if frame.is_empty() || frame[0] != 0x07 {
+        tracing::error!("Nieprawidłowy kod komendy w ramce awarii 'brak naruszenia': {:02X?}", frame.get(0));
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let data = &frame[1..];
+    // Satel zwraca 16 (128 wejść) lub 32 (256 wejść) bajty danych
+    if data.len() < 16 {
+        tracing::error!("Dane awarii 'brak naruszenia' zbyt krótkie: {} bajtów", data.len());
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let mut states = Vec::with_capacity(data.len() * 8);
+    for (byte_idx, &byte) in data.iter().enumerate() {
+        for bit in 0..8 {
+            let zone_id = (byte_idx * 8 + bit + 1) as u16;
+            let raw_state = (byte & (1 << bit)) != 0;
+            
+            // Inwersja stanu jeśli zone_id znajduje się na liście invert_list
+            let final_state = if invert_list.contains(&zone_id) {
+                !raw_state
+            } else {
+                raw_state
+            };
+            states.push(final_state);
+        }
+    }
+
+    Ok(ZonesNoViolationTroubleData {
+        states,
+        read_at: Local::now(),
+    })
+}
+
+/// Przetwarza całą ramkę odpowiedzi na komendę 0x06 (Zones bypass).
+/// Uwzględnia listę wejść, których stan ma zostać odwrócony.
+pub fn process_zones_bypass(frame: &[u8], invert_list: &[u16]) -> Result<ZonesBypassData, SatelError> {
+    if frame.is_empty() || frame[0] != 0x06 {
+        tracing::error!("Nieprawidłowy kod komendy w ramce blokad (bypass): {:02X?}", frame.get(0));
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let data = &frame[1..];
+    // Satel zwraca 16 (128 wejść) lub 32 (256 wejść) bajty danych
+    if data.len() < 16 {
+        tracing::error!("Dane blokad (bypass) zbyt krótkie: {} bajtów", data.len());
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let mut states = Vec::with_capacity(data.len() * 8);
+    for (byte_idx, &byte) in data.iter().enumerate() {
+        for bit in 0..8 {
+            let zone_id = (byte_idx * 8 + bit + 1) as u16;
+            let raw_state = (byte & (1 << bit)) != 0;
+            
+            // Inwersja stanu jeśli zone_id znajduje się na liście invert_list
+            let final_state = if invert_list.contains(&zone_id) {
+                !raw_state
+            } else {
+                raw_state
+            };
+            states.push(final_state);
+        }
+    }
+
+    Ok(ZonesBypassData {
+        states,
+        read_at: Local::now(),
+    })
+}
+
+/// Przetwarza całą ramkę odpowiedzi na komendę 0x08 (Zones 'long violation' trouble).
+/// Uwzględnia listę wejść, których stan ma zostać odwrócony.
+pub fn process_zones_long_violation_trouble(frame: &[u8], invert_list: &[u16]) -> Result<ZonesLongViolationTroubleData, SatelError> {
+    if frame.is_empty() || frame[0] != 0x08 {
+        tracing::error!("Nieprawidłowy kod komendy w ramce awarii 'długie naruszenie': {:02X?}", frame.get(0));
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let data = &frame[1..];
+    // Satel zwraca 16 (128 wejść) lub 32 (256 wejść) bajty danych
+    if data.len() < 16 {
+        tracing::error!("Dane awarii 'długie naruszenie' zbyt krótkie: {} bajtów", data.len());
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let mut states = Vec::with_capacity(data.len() * 8);
+    for (byte_idx, &byte) in data.iter().enumerate() {
+        for bit in 0..8 {
+            let zone_id = (byte_idx * 8 + bit + 1) as u16;
+            let raw_state = (byte & (1 << bit)) != 0;
+            
+            // Inwersja stanu jeśli zone_id znajduje się na liście invert_list
+            let final_state = if invert_list.contains(&zone_id) {
+                !raw_state
+            } else {
+                raw_state
+            };
+            states.push(final_state);
+        }
+    }
+
+    Ok(ZonesLongViolationTroubleData {
+        states,
+        read_at: Local::now(),
+    })
 }

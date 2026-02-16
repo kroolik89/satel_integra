@@ -1,9 +1,13 @@
 use crate::satel_integra_data::{
     Config, ConnectionConfig, ConnectionStatus, ConnectionType, IntegraVersion, SatelCommand,
     SatelState, SatelStateHandle, ZoneName, OutputName, PartitionName, ZoneTemperature,
+    ZoneStatus,
 };
 use crate::satel_integra_process::{
-    process_integra_version, process_zone_name, process_output_name, process_partition_name, process_zone_temperature
+    process_integra_version, process_zone_name, process_output_name, process_partition_name, 
+    process_zone_temperature, process_zones_tamper, process_zones_alarm, process_zones_violation,
+    process_zones_tamper_alarm, process_zones_alarm_memory, process_zones_tamper_alarm_memory,
+    process_zones_bypass, process_zones_no_violation_trouble, process_zones_long_violation_trouble
 };
 use bytes::{Buf, BytesMut};
 use chrono::Local;
@@ -203,12 +207,7 @@ impl SatelIntegra {
         let cmd = vec![SatelCommand::IntegraVersion.to_byte()];
         let response = self.exchange(cmd, None, None).await?;
 
-        if response.is_empty() || response[0] != SatelCommand::IntegraVersion.to_byte() {
-            tracing::error!("Otrzymano nieprawidłową odpowiedź na zapytanie o wersję");
-            return Err(SatelError::InvalidFrame);
-        }
-
-        let version = process_integra_version(&response[1..])?;
+        let version = process_integra_version(&response)?;
 
         {
             let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
@@ -246,16 +245,7 @@ impl SatelIntegra {
              return Err(SatelError::InvalidFrame);
         }
 
-        if response.is_empty() || response[0] != SatelCommand::ReadDeviceName.to_byte() {
-            tracing::error!(
-                "Nieprawidłowy bajt komendy w odpowiedzi dla wejścia {}. Oczekiwano: EE, otrzymano: {:02X?}",
-                zone_id,
-                response.get(0)
-            );
-            return Err(SatelError::InvalidFrame);
-        }
-
-        let (id, s_name) = process_zone_name(&response[1..]).map_err(|e| {
+        let (id, s_name) = process_zone_name(&response).map_err(|e| {
             tracing::error!("Błąd podczas przetwarzania nazwy wejścia {}: {:?}", zone_id, e);
             e
         })?;
@@ -293,16 +283,7 @@ impl SatelIntegra {
              return Err(SatelError::InvalidFrame);
         }
 
-        if response.is_empty() || response[0] != SatelCommand::ReadDeviceName.to_byte() {
-            tracing::error!(
-                "Nieprawidłowy bajt komendy w odpowiedzi dla wyjścia {}. Oczekiwano: EE, otrzymano: {:02X?}",
-                output_id,
-                response.get(0)
-            );
-            return Err(SatelError::InvalidFrame);
-        }
-
-        let (id, s_name) = process_output_name(&response[1..]).map_err(|e| {
+        let (id, s_name) = process_output_name(&response).map_err(|e| {
             tracing::error!("Błąd podczas przetwarzania nazwy wyjścia {}: {:?}", output_id, e);
             e
         })?;
@@ -340,16 +321,7 @@ impl SatelIntegra {
              return Err(SatelError::InvalidFrame);
         }
 
-        if response.is_empty() || response[0] != SatelCommand::ReadDeviceName.to_byte() {
-            tracing::error!(
-                "Nieprawidłowy bajt komendy w odpowiedzi dla strefy {}. Oczekiwano: EE, otrzymano: {:02X?}",
-                partition_id,
-                response.get(0)
-            );
-            return Err(SatelError::InvalidFrame);
-        }
-
-        let (id, partition_name) = process_partition_name(&response[1..]).map_err(|e| {
+        let (id, partition_name) = process_partition_name(&response).map_err(|e| {
             tracing::error!("Błąd podczas przetwarzania nazwy strefy {}: {:?}", partition_id, e);
             e
         })?;
@@ -379,40 +351,36 @@ impl SatelIntegra {
 
         match response_result {
             Ok(response) => {
-                if !response.is_empty() && response[0] == SatelCommand::ReadZoneTemperature.to_byte() {
-                    match process_zone_temperature(&response[1..]) {
-                        Ok((id, temp)) => {
-                            let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
-                            let zone = state.zones.get_mut((id.wrapping_sub(1) % 256) as usize)
-                                .ok_or(SatelError::InvalidFrame)?;
+                match process_zone_temperature(&response) {
+                    Ok((id, temp)) => {
+                        let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+                        let zone = state.zones.get_mut((id.wrapping_sub(1) % 256) as usize)
+                            .ok_or(SatelError::InvalidFrame)?;
 
-                            zone.temperature_value = temp;
-                            zone.temperature_read_at = Local::now();
-                            
-                            // Logika: NoRead -> Ok
-                            if zone.temperature_status == crate::satel_integra_data::TemperatureSensorStatus::NoRead {
-                                zone.temperature_status = crate::satel_integra_data::TemperatureSensorStatus::Ok;
-                            }
-
-                            // Dekrementacja liczników current
-                            if zone.temperature_timeout_errors_current > 0 {
-                                zone.temperature_timeout_errors_current -= 1;
-                            }
-                            if zone.temperature_sensor_errors_current > 0 {
-                                zone.temperature_sensor_errors_current -= 1;
-                            }
-
-                            tracing::info!("Pobrano temperaturę wejścia {}: {}°C", id, temp);
-                            return Ok(zone.to_zone_temperature());
+                        zone.temperature_value = temp;
+                        zone.temperature_read_at = Local::now();
+                        
+                        // Logika: NoRead -> Ok
+                        if zone.temperature_status == crate::satel_integra_data::TemperatureSensorStatus::NoRead {
+                            zone.temperature_status = crate::satel_integra_data::TemperatureSensorStatus::Ok;
                         }
-                        Err(e) => {
-                            self.update_temp_error(zone_id, &e)?;
-                            return Err(e);
+
+                        // Dekrementacja liczników current
+                        if zone.temperature_timeout_errors_current > 0 {
+                            zone.temperature_timeout_errors_current -= 1;
                         }
+                        if zone.temperature_sensor_errors_current > 0 {
+                            zone.temperature_sensor_errors_current -= 1;
+                        }
+
+                        tracing::info!("Pobrano temperaturę wejścia {}: {}°C", id, temp);
+                        return Ok(zone.to_zone_temperature());
+                    }
+                    Err(e) => {
+                        self.update_temp_error(zone_id, &e)?;
+                        return Err(e);
                     }
                 }
-                self.update_temp_error(zone_id, &SatelError::InvalidFrame)?;
-                Err(SatelError::InvalidFrame)
             }
             Err(e) => {
                 self.update_temp_error(zone_id, &e)?;
@@ -495,6 +463,253 @@ impl SatelIntegra {
 
         // 3. Jeśli przeszło przez filtry -> wywołaj właściwy odczyt
         self.get_zone_temperature(zone_id).await
+    }
+
+    /// Pobiera stan sabotaży wszystkich wejść z centrali i aktualizuje cache.
+    pub async fn get_zones_tamper(&self) -> Result<(), SatelError> {
+        tracing::info!("Pobieranie stanu sabotaży wszystkich wejść...");
+
+        // Komenda 0x01, wysyłamy 2 bajty (0x01 + 0x00), aby wymusić odpowiedź 32-bajtową (256 wejść)
+        let cmd = vec![SatelCommand::ZonesTamper.to_byte(), 0x00];
+        let response = self.exchange(cmd, None, None).await?;
+
+        let result = process_zones_tamper(&response, &self.config.io_tamper_invert)?;
+
+        {
+            let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+            for (i, &tamper_state) in result.states.iter().enumerate() {
+                if let Some(zone) = state.zones.get_mut(i) {
+                    zone.tamper_state = tamper_state;
+                    zone.tamper_read_at = result.read_at;
+                }
+            }
+        }
+
+        tracing::info!("Zaktualizowano stan sabotaży dla {} wejść", result.states.len());
+        Ok(())
+    }
+
+    /// Pobiera zagregowany status pojedynczego wejścia z cache.
+    pub fn get_cached_zone_status(&self, zone_id: u16) -> Result<Option<ZoneStatus>, SatelError> {
+        let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
+        
+        Ok(state.zones.get((zone_id.wrapping_sub(1) % 256) as usize).map(|z| {
+            ZoneStatus {
+                id: z.id,
+                name: z.zone_name.clone(),
+                temperature: z.temperature_value,
+                violation_state: z.violation_state,
+                violation_at: z.violation_read_at,
+                tamper_state: z.tamper_state,
+                tamper_at: z.tamper_read_at,
+                alarm_state: z.alarm_state,
+                alarm_at: z.alarm_read_at,
+                tamper_alarm_state: z.tamper_alarm_state,
+                tamper_alarm_at: z.tamper_alarm_read_at,
+                alarm_memory_state: z.alarm_memory_state,
+                alarm_memory_at: z.alarm_memory_read_at,
+                tamper_alarm_memory_state: z.tamper_alarm_memory_state,
+                tamper_alarm_memory_at: z.tamper_alarm_memory_read_at,
+                bypass_state: z.bypass_state,
+                bypass_at: z.bypass_read_at,
+                no_violation_trouble_state: z.no_violation_trouble_state,
+                no_violation_trouble_at: z.no_violation_trouble_read_at,
+                long_violation_trouble_state: z.long_violation_trouble_state,
+                long_violation_trouble_at: z.long_violation_trouble_read_at,
+            }
+        }))
+    }
+
+    /// Pobiera stan alarmów wszystkich wejść z centrali i aktualizuje cache.
+    pub async fn get_zones_alarm(&self) -> Result<(), SatelError> {
+        tracing::info!("Pobieranie stanu alarmów wszystkich wejść...");
+
+        // Komenda 0x02, wysyłamy 2 bajty (0x02 + 0x00), aby wymusić odpowiedź 32-bajtową (256 wejść)
+        let cmd = vec![SatelCommand::ZonesAlarm.to_byte(), 0x00];
+        let response = self.exchange(cmd, None, None).await?;
+
+        let result = process_zones_alarm(&response, &self.config.io_alarm_invert)?;
+
+        {
+            let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+            for (i, &alarm_state) in result.states.iter().enumerate() {
+                if let Some(zone) = state.zones.get_mut(i) {
+                    zone.alarm_state = alarm_state;
+                    zone.alarm_read_at = result.read_at;
+                }
+            }
+        }
+
+        tracing::info!("Zaktualizowano stan alarmów dla {} wejść", result.states.len());
+        Ok(())
+    }
+
+    /// Pobiera stan naruszeń wszystkich wejść z centrali i aktualizuje cache.
+    pub async fn get_zones_violation(&self) -> Result<(), SatelError> {
+        tracing::info!("Pobieranie stanu naruszeń wszystkich wejść...");
+
+        // Komenda 0x00, wysyłamy 2 bajty (0x00 + 0x00), aby wymusić odpowiedź 32-bajtową (256 wejść)
+        let cmd = vec![SatelCommand::ZonesViolation.to_byte(), 0x00];
+        let response = self.exchange(cmd, None, None).await?;
+
+        let result = process_zones_violation(&response, &self.config.io_violation_invert)?;
+
+        {
+            let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+            for (i, &violation_state) in result.states.iter().enumerate() {
+                if let Some(zone) = state.zones.get_mut(i) {
+                    zone.violation_state = violation_state;
+                    zone.violation_read_at = result.read_at;
+                }
+            }
+        }
+
+        tracing::info!("Zaktualizowano stan naruszeń dla {} wejść", result.states.len());
+        Ok(())
+    }
+
+    /// Pobiera stan alarmów sabotażowych wszystkich wejść z centrali i aktualizuje cache.
+    pub async fn get_zones_tamper_alarm(&self) -> Result<(), SatelError> {
+        tracing::info!("Pobieranie stanu alarmów sabotażowych wszystkich wejść...");
+
+        // Komenda 0x03, wysyłamy 2 bajty (0x03 + 0x00), aby wymusić odpowiedź 32-bajtową (256 wejść)
+        let cmd = vec![SatelCommand::ZonesTamperAlarm.to_byte(), 0x00];
+        let response = self.exchange(cmd, None, None).await?;
+
+        let result = process_zones_tamper_alarm(&response, &self.config.io_tamper_alarm_invert)?;
+
+        {
+            let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+            for (i, &tamper_alarm_state) in result.states.iter().enumerate() {
+                if let Some(zone) = state.zones.get_mut(i) {
+                    zone.tamper_alarm_state = tamper_alarm_state;
+                    zone.tamper_alarm_read_at = result.read_at;
+                }
+            }
+        }
+
+        tracing::info!("Zaktualizowano stan alarmów sabotażowych dla {} wejść", result.states.len());
+        Ok(())
+    }
+
+    /// Pobiera stan pamięci alarmów wszystkich wejść z centrali i aktualizuje cache.
+    pub async fn get_zones_alarm_memory(&self) -> Result<(), SatelError> {
+        tracing::info!("Pobieranie stanu pamięci alarmów wszystkich wejść...");
+
+        // Komenda 0x04, wysyłamy 2 bajty (0x04 + 0x00), aby wymusić odpowiedź 32-bajtową (256 wejść)
+        let cmd = vec![SatelCommand::ZonesAlarmMemory.to_byte(), 0x00];
+        let response = self.exchange(cmd, None, None).await?;
+
+        let result = process_zones_alarm_memory(&response, &self.config.io_alarm_memory_invert)?;
+
+        {
+            let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+            for (i, &alarm_memory_state) in result.states.iter().enumerate() {
+                if let Some(zone) = state.zones.get_mut(i) {
+                    zone.alarm_memory_state = alarm_memory_state;
+                    zone.alarm_memory_read_at = result.read_at;
+                }
+            }
+        }
+
+        tracing::info!("Zaktualizowano stan pamięci alarmów dla {} wejść", result.states.len());
+        Ok(())
+    }
+
+    /// Pobiera stan pamięci alarmów sabotażowych wszystkich wejść z centrali i aktualizuje cache.
+    pub async fn get_zones_tamper_alarm_memory(&self) -> Result<(), SatelError> {
+        tracing::info!("Pobieranie stanu pamięci alarmów sabotażowych wszystkich wejść...");
+
+        // Komenda 0x05, wysyłamy 2 bajty (0x05 + 0x00), aby wymusić odpowiedź 32-bajtową (256 wejść)
+        let cmd = vec![SatelCommand::ZonesTamperAlarmMemory.to_byte(), 0x00];
+        let response = self.exchange(cmd, None, None).await?;
+
+        let result = process_zones_tamper_alarm_memory(&response, &self.config.io_tamper_alarm_memory_invert)?;
+
+        {
+            let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+            for (i, &tamper_alarm_memory_state) in result.states.iter().enumerate() {
+                if let Some(zone) = state.zones.get_mut(i) {
+                    zone.tamper_alarm_memory_state = tamper_alarm_memory_state;
+                    zone.tamper_alarm_memory_read_at = result.read_at;
+                }
+            }
+        }
+
+        tracing::info!("Zaktualizowano stan pamięci alarmów sabotażowych dla {} wejść", result.states.len());
+        Ok(())
+    }
+
+    /// Pobiera stan blokad (bypass) wszystkich wejść z centrali i aktualizuje cache.
+    pub async fn get_zones_bypass(&self) -> Result<(), SatelError> {
+        tracing::info!("Pobieranie stanu blokad (bypass) wszystkich wejść...");
+
+        // Komenda 0x06, wysyłamy 2 bajty (0x06 + 0x00), aby wymusić odpowiedź 32-bajtową (256 wejść)
+        let cmd = vec![SatelCommand::ZonesBypass.to_byte(), 0x00];
+        let response = self.exchange(cmd, None, None).await?;
+
+        let result = process_zones_bypass(&response, &self.config.io_bypass_invert)?;
+
+        {
+            let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+            for (i, &bypass_state) in result.states.iter().enumerate() {
+                if let Some(zone) = state.zones.get_mut(i) {
+                    zone.bypass_state = bypass_state;
+                    zone.bypass_read_at = result.read_at;
+                }
+            }
+        }
+
+        tracing::info!("Zaktualizowano stan blokad dla {} wejść", result.states.len());
+        Ok(())
+    }
+
+    /// Pobiera stan awarii "brak naruszenia" wszystkich wejść z centrali i aktualizuje cache.
+    pub async fn get_zones_no_violation_trouble(&self) -> Result<(), SatelError> {
+        tracing::info!("Pobieranie stanu awarii 'brak naruszenia' wszystkich wejść...");
+
+        // Komenda 0x07, wysyłamy 2 bajty (0x07 + 0x00), aby wymusić odpowiedź 32-bajtową (256 wejść)
+        let cmd = vec![SatelCommand::ZonesNoViolationTrouble.to_byte(), 0x00];
+        let response = self.exchange(cmd, None, None).await?;
+
+        let result = process_zones_no_violation_trouble(&response, &self.config.io_no_violation_trouble_invert)?;
+
+        {
+            let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+            for (i, &no_violation_trouble_state) in result.states.iter().enumerate() {
+                if let Some(zone) = state.zones.get_mut(i) {
+                    zone.no_violation_trouble_state = no_violation_trouble_state;
+                    zone.no_violation_trouble_read_at = result.read_at;
+                }
+            }
+        }
+
+        tracing::info!("Zaktualizowano stan awarii 'brak naruszenia' dla {} wejść", result.states.len());
+        Ok(())
+    }
+
+    /// Pobiera stan awarii "długie naruszenie" wszystkich wejść z centrali i aktualizuje cache.
+    pub async fn get_zones_long_violation_trouble(&self) -> Result<(), SatelError> {
+        tracing::info!("Pobieranie stanu awarii 'długie naruszenie' wszystkich wejść...");
+
+        // Komenda 0x08, wysyłamy 2 bajty (0x08 + 0x00), aby wymusić odpowiedź 32-bajtową (256 wejść)
+        let cmd = vec![SatelCommand::ZonesLongViolationTrouble.to_byte(), 0x00];
+        let response = self.exchange(cmd, None, None).await?;
+
+        let result = process_zones_long_violation_trouble(&response, &self.config.io_long_violation_trouble_invert)?;
+
+        {
+            let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+            for (i, &long_violation_trouble_state) in result.states.iter().enumerate() {
+                if let Some(zone) = state.zones.get_mut(i) {
+                    zone.long_violation_trouble_state = long_violation_trouble_state;
+                    zone.long_violation_trouble_read_at = result.read_at;
+                }
+            }
+        }
+
+        tracing::info!("Zaktualizowano stan awarii 'długie naruszenie' dla {} wejść", result.states.len());
+        Ok(())
     }
 }
 

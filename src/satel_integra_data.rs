@@ -47,6 +47,42 @@ pub struct Config {
     /// Maksymalna liczba błędów czujnika raportowanych przez Satel przed zablokowaniem.
     #[serde(default = "default_temp_max_sensor_errors")]
     pub temp_max_sensor_errors: u32,
+
+    /// Lista ID wejść (1-256), których stan sabotażu ma być odwrócony.
+    #[serde(default)]
+    pub io_tamper_invert: Vec<u16>,
+
+    /// Lista ID wejść (1-256), których stan alarmowy ma być odwrócony.
+    #[serde(default)]
+    pub io_alarm_invert: Vec<u16>,
+
+    /// Lista ID wejść (1-256), których stan naruszenia (violation) ma być odwrócony.
+    #[serde(default)]
+    pub io_violation_invert: Vec<u16>,
+
+    /// Lista ID wejść (1-256), których stan alarmu sabotażowego ma być odwrócony.
+    #[serde(default)]
+    pub io_tamper_alarm_invert: Vec<u16>,
+
+    /// Lista ID wejść (1-256), których stan pamięci alarmu ma być odwrócony.
+    #[serde(default)]
+    pub io_alarm_memory_invert: Vec<u16>,
+
+    /// Lista ID wejść (1-256), których stan pamięci alarmu sabotażowego ma być odwrócony.
+    #[serde(default)]
+    pub io_tamper_alarm_memory_invert: Vec<u16>,
+
+    /// Lista ID wejść (1-256), których stan blokady (bypass) ma być odwrócony.
+    #[serde(default)]
+    pub io_bypass_invert: Vec<u16>,
+
+    /// Lista ID wejść (1-256), których stan awarii "brak naruszenia" ma być odwrócony.
+    #[serde(default)]
+    pub io_no_violation_trouble_invert: Vec<u16>,
+
+    /// Lista ID wejść (1-256), których stan awarii "długie naruszenie" ma być odwrócony.
+    #[serde(default)]
+    pub io_long_violation_trouble_invert: Vec<u16>,
 }
 
 impl Default for Config {
@@ -62,6 +98,15 @@ impl Default for Config {
             temp_blocking_enabled: default_temp_blocking_enabled(),
             temp_max_timeout_errors: default_temp_max_timeout_errors(),
             temp_max_sensor_errors: default_temp_max_sensor_errors(),
+            io_tamper_invert: Vec::new(),
+            io_alarm_invert: Vec::new(),
+            io_violation_invert: Vec::new(),
+            io_tamper_alarm_invert: Vec::new(),
+            io_alarm_memory_invert: Vec::new(),
+            io_tamper_alarm_memory_invert: Vec::new(),
+            io_bypass_invert: Vec::new(),
+            io_no_violation_trouble_invert: Vec::new(),
+            io_long_violation_trouble_invert: Vec::new(),
         }
     }
 }
@@ -226,6 +271,95 @@ pub struct ZoneTemperature {
     pub read_at: DateTime<Local>,
 }
 
+/// Dane o sabotażu wejść odczytane z centrali (dla procesora).
+#[derive(Debug, Clone)]
+pub struct ZonesTamperData {
+    pub states: Vec<bool>,
+    pub read_at: DateTime<Local>,
+}
+
+/// Dane o alarmach wejść odczytane z centrali (dla procesora).
+#[derive(Debug, Clone)]
+pub struct ZonesAlarmData {
+    pub states: Vec<bool>,
+    pub read_at: DateTime<Local>,
+}
+
+/// Dane o naruszeniach wejść odczytane z centrali (dla procesora).
+#[derive(Debug, Clone)]
+pub struct ZonesViolationData {
+    pub states: Vec<bool>,
+    pub read_at: DateTime<Local>,
+}
+
+/// Dane o alarmach sabotażowych wejść odczytane z centrali (dla procesora).
+#[derive(Debug, Clone)]
+pub struct ZonesTamperAlarmData {
+    pub states: Vec<bool>,
+    pub read_at: DateTime<Local>,
+}
+
+/// Dane o pamięci alarmów wejść odczytane z centrali (dla procesora).
+#[derive(Debug, Clone)]
+pub struct ZonesAlarmMemoryData {
+    pub states: Vec<bool>,
+    pub read_at: DateTime<Local>,
+}
+
+/// Dane o pamięci alarmów sabotażowych wejść odczytane z centrali (dla procesora).
+#[derive(Debug, Clone)]
+pub struct ZonesTamperAlarmMemoryData {
+    pub states: Vec<bool>,
+    pub read_at: DateTime<Local>,
+}
+
+/// Dane o blokadach wejść odczytane z centrali (dla procesora).
+#[derive(Debug, Clone)]
+pub struct ZonesBypassData {
+    pub states: Vec<bool>,
+    pub read_at: DateTime<Local>,
+}
+
+/// Dane o awariach "brak naruszenia" wejść odczytane z centrali (dla procesora).
+#[derive(Debug, Clone)]
+pub struct ZonesNoViolationTroubleData {
+    pub states: Vec<bool>,
+    pub read_at: DateTime<Local>,
+}
+
+/// Dane o awariach "długie naruszenie" wejść odczytane z centrali (dla procesora).
+#[derive(Debug, Clone)]
+pub struct ZonesLongViolationTroubleData {
+    pub states: Vec<bool>,
+    pub read_at: DateTime<Local>,
+}
+
+/// Zagregowany status pojedynczego wejścia (dla użytkownika).
+#[derive(Debug, Clone)]
+pub struct ZoneStatus {
+    pub id: u16,
+    pub name: String,
+    pub temperature: f32,
+    pub violation_state: bool,
+    pub violation_at: DateTime<Local>,
+    pub tamper_state: bool,
+    pub tamper_at: DateTime<Local>,
+    pub alarm_state: bool,
+    pub alarm_at: DateTime<Local>,
+    pub tamper_alarm_state: bool,
+    pub tamper_alarm_at: DateTime<Local>,
+    pub alarm_memory_state: bool,
+    pub alarm_memory_at: DateTime<Local>,
+    pub tamper_alarm_memory_state: bool,
+    pub tamper_alarm_memory_at: DateTime<Local>,
+    pub bypass_state: bool,
+    pub bypass_at: DateTime<Local>,
+    pub no_violation_trouble_state: bool,
+    pub no_violation_trouble_at: DateTime<Local>,
+    pub long_violation_trouble_state: bool,
+    pub long_violation_trouble_at: DateTime<Local>,
+}
+
 /// Aliasy dla czytelności (zachowanie kompatybilności wstecznej)
 pub type ZoneName = SatelName;
 pub type OutputName = SatelName;
@@ -246,6 +380,33 @@ pub struct Zone {
     pub temperature_sensor_errors_total: u32,
     pub temperature_timeout_errors_current: u32,
     pub temperature_sensor_errors_current: u32,
+    // Dane z sabotażu
+    pub tamper_state: bool,
+    pub tamper_read_at: DateTime<Local>,
+    // Dane z alarmu
+    pub alarm_state: bool,
+    pub alarm_read_at: DateTime<Local>,
+    // Dane z naruszenia
+    pub violation_state: bool,
+    pub violation_read_at: DateTime<Local>,
+    // Dane z alarmu sabotażowego
+    pub tamper_alarm_state: bool,
+    pub tamper_alarm_read_at: DateTime<Local>,
+    // Dane z pamięci alarmu
+    pub alarm_memory_state: bool,
+    pub alarm_memory_read_at: DateTime<Local>,
+    // Dane z pamięci alarmu sabotażowego
+    pub tamper_alarm_memory_state: bool,
+    pub tamper_alarm_memory_read_at: DateTime<Local>,
+    // Dane z blokady (bypass)
+    pub bypass_state: bool,
+    pub bypass_read_at: DateTime<Local>,
+    // Dane z awarii "brak naruszenia"
+    pub no_violation_trouble_state: bool,
+    pub no_violation_trouble_read_at: DateTime<Local>,
+    // Dane z awarii "długie naruszenie"
+    pub long_violation_trouble_state: bool,
+    pub long_violation_trouble_read_at: DateTime<Local>,
 }
 
 impl Zone {
@@ -262,6 +423,24 @@ impl Zone {
             temperature_sensor_errors_total: 0,
             temperature_timeout_errors_current: 0,
             temperature_sensor_errors_current: 0,
+            tamper_state: false,
+            tamper_read_at: now,
+            alarm_state: false,
+            alarm_read_at: now,
+            violation_state: false,
+            violation_read_at: now,
+            tamper_alarm_state: false,
+            tamper_alarm_read_at: now,
+            alarm_memory_state: false,
+            alarm_memory_read_at: now,
+            tamper_alarm_memory_state: false,
+            tamper_alarm_memory_read_at: now,
+            bypass_state: false,
+            bypass_read_at: now,
+            no_violation_trouble_state: false,
+            no_violation_trouble_read_at: now,
+            long_violation_trouble_state: false,
+            long_violation_trouble_read_at: now,
         }
     }
 

@@ -16,7 +16,7 @@ pub mod satel_integra_process;
 pub use satel_integra::{SatelError, SatelIntegra};
 pub use satel_integra_data::{
     Config, ConnectionConfig, ConnectionStatus, ConnectionTelemetry, ConnectionType, SatelCommand,
-    SatelState, SatelStateHandle,
+    SatelState, SatelStateHandle, ZoneStatus, ZonesTamperData,
 };
 
 use std::sync::Once;
