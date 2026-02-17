@@ -1,5 +1,4 @@
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Instant, SystemTime};
@@ -119,6 +118,10 @@ pub struct Config {
     /// Czy automatycznie odpytywać o stan awarii "długie naruszenie" wejść (0x08).
     #[serde(default = "default_auto_read")]
     pub auto_read_zones_long_violation_trouble: bool,
+
+    /// Czy automatycznie odpytywać o stan uzbrojenia stref (suppressed) (0x09).
+    #[serde(default = "default_auto_read")]
+    pub auto_read_partitions_armed_suppressed: bool,
 }
 
 impl Default for Config {
@@ -152,6 +155,7 @@ impl Default for Config {
             auto_read_zones_bypass: default_auto_read(),
             auto_read_zones_no_violation_trouble: default_auto_read(),
             auto_read_zones_long_violation_trouble: default_auto_read(),
+            auto_read_partitions_armed_suppressed: default_auto_read(),
         }
     }
 }
@@ -386,6 +390,13 @@ pub struct ZonesLongViolationTroubleData {
     pub read_at: DateTime<Local>,
 }
 
+/// Dane o uzbrojeniu stref odczytane z centrali (dla procesora).
+#[derive(Debug, Clone)]
+pub struct PartitionsArmedData {
+    pub states: Vec<bool>,
+    pub read_at: DateTime<Local>,
+}
+
 /// Zagregowany status pojedynczego wejścia (dla użytkownika).
 #[derive(Debug, Clone)]
 pub struct ZoneStatus {
@@ -512,6 +523,37 @@ impl Zone {
     }
 }
 
+/// Ujednolicona struktura Strefy (Partition).
+#[derive(Debug, Clone)]
+pub struct Partition {
+    pub id: u16,
+    pub name: String,
+    pub name_read_at: DateTime<Local>,
+    // Stany logiczne
+    pub armed_suppressed: bool, // 0x09
+    pub armed_suppressed_at: DateTime<Local>,
+}
+
+impl Partition {
+    pub fn new(id: u16) -> Self {
+        let now = Local::now();
+        Self {
+            id,
+            name: String::new(),
+            name_read_at: now,
+            armed_suppressed: false,
+            armed_suppressed_at: now,
+        }
+    }
+
+    pub fn to_partition_name(&self) -> PartitionName {
+        PartitionName {
+            name: self.name.clone(),
+            read_at: self.name_read_at,
+        }
+    }
+}
+
 /// Ujednolicona struktura Wyjścia (Output).
 #[derive(Debug, Clone)]
 pub struct Output {
@@ -543,9 +585,9 @@ pub struct SatelState {
     pub connection_type: Option<ConnectionType>,
     pub telemetry: ConnectionTelemetry,
     pub integra_version: Option<IntegraVersion>,
-    pub zones: Vec<Zone>,     // Tablica 256 wejść
-    pub outputs: Vec<Output>, // Tablica 256 wyjść
-    pub partition_names: HashMap<u16, PartitionName>,
+    pub zones: Vec<Zone>,           // Tablica 256 wejść
+    pub outputs: Vec<Output>,       // Tablica 256 wyjść
+    pub partitions: Vec<Partition>, // Tablica 32 stref
 }
 
 impl SatelState {
@@ -557,13 +599,18 @@ impl SatelState {
             outputs.push(Output::new(i as u16));
         }
 
+        let mut partitions = Vec::with_capacity(32);
+        for i in 1..=32 {
+            partitions.push(Partition::new(i as u16));
+        }
+
         Self {
             connection_type: None,
             telemetry: ConnectionTelemetry::new(),
             integra_version: None,
             zones,
             outputs,
-            partition_names: HashMap::new(),
+            partitions,
         }
     }
 }

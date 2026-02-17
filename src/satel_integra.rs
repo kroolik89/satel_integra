@@ -5,9 +5,10 @@ use crate::satel_integra_data::{
 };
 use crate::satel_integra_process::{
     process_integra_version, process_output_name, process_partition_name, process_zone_name,
-    process_zone_temperature, process_zones_alarm, process_zones_alarm_memory, process_zones_bypass,
-    process_zones_long_violation_trouble, process_zones_no_violation_trouble, process_zones_tamper,
-    process_zones_tamper_alarm, process_zones_tamper_alarm_memory, process_zones_violation,
+    process_partitions_armed_suppressed, process_zone_temperature, process_zones_alarm,
+    process_zones_alarm_memory, process_zones_bypass, process_zones_long_violation_trouble,
+    process_zones_no_violation_trouble, process_zones_tamper, process_zones_tamper_alarm,
+    process_zones_tamper_alarm_memory, process_zones_violation,
 };
 use bytes::{Buf, BytesMut};
 use chrono::Local;
@@ -289,6 +290,7 @@ impl SatelIntegra {
 
         // Bajt 2: bity dla komend 0x08-0x0F
         if self.config.auto_read_zones_long_violation_trouble { mask_on_change[1] |= 1 << 0; }
+        if self.config.auto_read_partitions_armed_suppressed { mask_on_change[1] |= 1 << 1; }
 
         auto_push_data.extend_from_slice(&mask_on_change);
 
@@ -447,7 +449,10 @@ impl SatelIntegra {
 
         {
             let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
-            state.partition_names.insert(id, partition_name.clone());
+            if let Some(partition) = state.partitions.get_mut((id.wrapping_sub(1) % 32) as usize) {
+                partition.name = partition_name.name.clone();
+                partition.name_read_at = partition_name.read_at;
+            }
         }
 
         tracing::info!("Pobrano nazwę strefy {}: {}", id, partition_name.name);
@@ -460,7 +465,10 @@ impl SatelIntegra {
         partition_id: u16,
     ) -> Result<Option<PartitionName>, SatelError> {
         let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
-        Ok(state.partition_names.get(&partition_id).cloned())
+        Ok(state
+            .partitions
+            .get((partition_id.wrapping_sub(1) % 32) as usize)
+            .map(|p| p.to_partition_name()))
     }
 
     /// Pobiera temperaturę wejścia (zony) z centrali.
@@ -871,6 +879,32 @@ impl SatelIntegra {
         Ok(())
     }
 
+    /// Pobiera stan uzbrojenia stref (suppressed) z centrali i aktualizuje cache.
+    pub async fn get_partitions_armed_suppressed(&self) -> Result<(), SatelError> {
+        tracing::info!("Pobieranie stanu uzbrojenia stref (suppressed)...");
+
+        let cmd = vec![SatelCommand::ArmedPartitionsSuppressed.to_byte()];
+        let response = self.exchange(cmd, None, None).await?;
+
+        let result = process_partitions_armed_suppressed(&response)?;
+
+        {
+            let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+            for (i, &armed) in result.states.iter().enumerate() {
+                if let Some(partition) = state.partitions.get_mut(i) {
+                    partition.armed_suppressed = armed;
+                    partition.armed_suppressed_at = result.read_at;
+                }
+            }
+        }
+
+        tracing::info!(
+            "Zaktualizowano stan uzbrojenia (suppressed) dla {} stref",
+            result.states.len()
+        );
+        Ok(())
+    }
+
     /// Pobiera stan awarii "długie naruszenie" wszystkich wejść z centrali i aktualizuje cache.
     pub async fn get_zones_long_violation_trouble(&self) -> Result<(), SatelError> {
         tracing::info!("Pobieranie stanu awarii 'długie naruszenie' wszystkich wejść...");
@@ -1005,6 +1039,18 @@ impl SatelAutoRequester {
                         if let Some(z) = s.zones.get_mut(i) {
                             z.alarm_state = v;
                             z.alarm_read_at = d.read_at;
+                        }
+                    }
+                }
+            }
+            0x09 => {
+                if let Ok(d) = process_partitions_armed_suppressed(frame) {
+                    let state = self.integra.state_handle();
+                    let mut s = state.write().unwrap();
+                    for (i, &v) in d.states.iter().enumerate() {
+                        if let Some(p) = s.partitions.get_mut(i) {
+                            p.armed_suppressed = v;
+                            p.armed_suppressed_at = d.read_at;
                         }
                     }
                 }

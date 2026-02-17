@@ -1,4 +1,8 @@
-use crate::satel_integra_data::{IntegraVersion, SatelName, ZonesTamperData, ZonesAlarmData, ZonesViolationData, ZonesTamperAlarmData, ZonesAlarmMemoryData, ZonesTamperAlarmMemoryData, ZonesBypassData, ZonesNoViolationTroubleData, ZonesLongViolationTroubleData};
+use crate::satel_integra_data::{
+    IntegraVersion, PartitionsArmedData, SatelName, ZonesAlarmData, ZonesAlarmMemoryData,
+    ZonesBypassData, ZonesLongViolationTroubleData, ZonesNoViolationTroubleData, ZonesTamperAlarmData,
+    ZonesTamperAlarmMemoryData, ZonesTamperData, ZonesViolationData,
+};
 use crate::satel_integra::SatelError;
 use chrono::Local;
 
@@ -459,6 +463,34 @@ pub fn process_zones_long_violation_trouble(frame: &[u8], invert_list: &[u16]) -
     }
 
     Ok(ZonesLongViolationTroubleData {
+        states,
+        read_at: Local::now(),
+    })
+}
+
+/// Przetwarza całą ramkę odpowiedzi na komendę 0x09 (Armed partitions suppressed).
+pub fn process_partitions_armed_suppressed(frame: &[u8]) -> Result<PartitionsArmedData, SatelError> {
+    if frame.is_empty() || frame[0] != 0x09 {
+        tracing::error!("Nieprawidłowy kod komendy w ramce uzbrojenia stref: {:02X?}", frame.get(0));
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let data = &frame[1..];
+    // Satel zwraca 4 bajty dla stref (32 strefy)
+    if data.len() < 4 {
+        tracing::error!("Dane uzbrojenia stref zbyt krótkie: {} bajtów", data.len());
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let mut states = Vec::with_capacity(32);
+    for &byte in data.iter().take(4) {
+        for bit in 0..8 {
+            let state = (byte & (1 << bit)) != 0;
+            states.push(state);
+        }
+    }
+
+    Ok(PartitionsArmedData {
         states,
         read_at: Local::now(),
     })
