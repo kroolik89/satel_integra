@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 use chrono::{DateTime, Local};
 
 // --- Nowe Struktury Konfiguracyjne ---
@@ -83,6 +83,42 @@ pub struct Config {
     /// Lista ID wejść (1-256), których stan awarii "długie naruszenie" ma być odwrócony.
     #[serde(default)]
     pub io_long_violation_trouble_invert: Vec<u16>,
+
+    /// Czy automatycznie odpytywać o stan naruszeń wejść (0x00).
+    #[serde(default = "default_auto_read")]
+    pub auto_read_zones_violation: bool,
+
+    /// Czy automatycznie odpytywać o stan sabotaży wejść (0x01).
+    #[serde(default = "default_auto_read")]
+    pub auto_read_zones_tamper: bool,
+
+    /// Czy automatycznie odpytywać o stan alarmów wejść (0x02).
+    #[serde(default = "default_auto_read")]
+    pub auto_read_zones_alarm: bool,
+
+    /// Czy automatycznie odpytywać o stan alarmów sabotażowych wejść (0x03).
+    #[serde(default = "default_auto_read")]
+    pub auto_read_zones_tamper_alarm: bool,
+
+    /// Czy automatycznie odpytywać o stan pamięci alarmów wejść (0x04).
+    #[serde(default = "default_auto_read")]
+    pub auto_read_zones_alarm_memory: bool,
+
+    /// Czy automatycznie odpytywać o stan pamięci alarmów sabotażowych wejść (0x05).
+    #[serde(default = "default_auto_read")]
+    pub auto_read_zones_tamper_alarm_memory: bool,
+
+    /// Czy automatycznie odpytywać o stan blokad wejść (0x06).
+    #[serde(default = "default_auto_read")]
+    pub auto_read_zones_bypass: bool,
+
+    /// Czy automatycznie odpytywać o stan awarii "brak naruszenia" wejść (0x07).
+    #[serde(default = "default_auto_read")]
+    pub auto_read_zones_no_violation_trouble: bool,
+
+    /// Czy automatycznie odpytywać o stan awarii "długie naruszenie" wejść (0x08).
+    #[serde(default = "default_auto_read")]
+    pub auto_read_zones_long_violation_trouble: bool,
 }
 
 impl Default for Config {
@@ -107,8 +143,22 @@ impl Default for Config {
             io_bypass_invert: Vec::new(),
             io_no_violation_trouble_invert: Vec::new(),
             io_long_violation_trouble_invert: Vec::new(),
+            auto_read_zones_violation: default_auto_read(),
+            auto_read_zones_tamper: default_auto_read(),
+            auto_read_zones_alarm: default_auto_read(),
+            auto_read_zones_tamper_alarm: default_auto_read(),
+            auto_read_zones_alarm_memory: default_auto_read(),
+            auto_read_zones_tamper_alarm_memory: default_auto_read(),
+            auto_read_zones_bypass: default_auto_read(),
+            auto_read_zones_no_violation_trouble: default_auto_read(),
+            auto_read_zones_long_violation_trouble: default_auto_read(),
         }
     }
+}
+
+/// Domyślna wartość dla pól automatycznego odczytu.
+fn default_auto_read() -> bool {
+    false
 }
 
 /// Domyślna wartość dla automatycznego ponownego połączenia.
@@ -203,6 +253,7 @@ pub enum ConnectionType {
 pub struct ConnectionTelemetry {
     pub status: ConnectionStatus,
     pub last_connected_at: Option<SystemTime>,
+    pub last_send_at: Instant,
     pub bytes_sent: AtomicUsize,
     pub bytes_received: AtomicUsize,
     pub reconnect_count: AtomicUsize,
@@ -213,6 +264,7 @@ impl Default for ConnectionTelemetry {
         Self {
             status: ConnectionStatus::Disconnected,
             last_connected_at: None,
+            last_send_at: Instant::now(),
             bytes_sent: AtomicUsize::new(0),
             bytes_received: AtomicUsize::new(0),
             reconnect_count: AtomicUsize::new(0),

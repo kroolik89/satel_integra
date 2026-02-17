@@ -1,13 +1,13 @@
 use crate::satel_integra_data::{
-    Config, ConnectionConfig, ConnectionStatus, ConnectionType, IntegraVersion, SatelCommand,
-    SatelState, SatelStateHandle, ZoneName, OutputName, PartitionName, ZoneTemperature,
-    ZoneStatus,
+    Config, ConnectionConfig, ConnectionStatus, ConnectionType, IntegraVersion, OutputName,
+    PartitionName, SatelCommand, SatelState, SatelStateHandle, ZoneName, ZoneStatus,
+    ZoneTemperature,
 };
 use crate::satel_integra_process::{
-    process_integra_version, process_zone_name, process_output_name, process_partition_name, 
-    process_zone_temperature, process_zones_tamper, process_zones_alarm, process_zones_violation,
-    process_zones_tamper_alarm, process_zones_alarm_memory, process_zones_tamper_alarm_memory,
-    process_zones_bypass, process_zones_no_violation_trouble, process_zones_long_violation_trouble
+    process_integra_version, process_output_name, process_partition_name, process_zone_name,
+    process_zone_temperature, process_zones_alarm, process_zones_alarm_memory, process_zones_bypass,
+    process_zones_long_violation_trouble, process_zones_no_violation_trouble, process_zones_tamper,
+    process_zones_tamper_alarm, process_zones_tamper_alarm_memory, process_zones_violation,
 };
 use bytes::{Buf, BytesMut};
 use chrono::Local;
@@ -30,6 +30,22 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> AsyncReadWrite for T {}
 
 /// Typ strumienia I/O, opakowany w `Framed` z naszym kodekiem.
 type FramedStream = Framed<Box<dyn AsyncReadWrite>, SatelCodec>;
+
+/// Zdarzenia dotyczące stanu połączenia.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionEvent {
+    Connected,
+    ConnectionLost,
+    Disconnected,
+}
+
+/// Wiadomości przesyłane do SatelAutoRequester.
+enum StateWorkerMessage {
+    /// Ramka otrzymana z centrali (np. Push).
+    Frame(Vec<u8>),
+    /// Zmiana stanu połączenia.
+    Event(ConnectionEvent),
+}
 
 /// Wewnętrzna wiadomość przesyłana między klientem a workerem.
 enum InternalMessage {
@@ -56,7 +72,7 @@ pub struct SatelIntegra {
     tx: mpsc::Sender<InternalMessage>,
     state: SatelStateHandle,
     config: Config,
-    worker: Arc<Mutex<Option<SatelWorker>>>,
+    worker: Arc<Mutex<Option<SatelConnectionWorker>>>,
 }
 
 /// Błędy, które mogą wystąpić podczas komunikacji.
@@ -101,12 +117,13 @@ impl SatelIntegra {
         let state = Arc::new(std::sync::RwLock::new(SatelState::new()));
         let (tx, rx) = mpsc::channel(100);
 
-        let worker = SatelWorker {
+        let worker = SatelConnectionWorker {
             config: config.clone(),
             state: state.clone(),
             rx,
             stream: None,
             consecutive_failures: 0,
+            state_worker_tx: None,
         };
 
         Self {
@@ -120,24 +137,43 @@ impl SatelIntegra {
     /// Uruchamia połączenie i workera w tle.
     /// Jeśli worker już działa, próbuje wymusić ponowne połączenie.
     pub async fn connect(&self) -> Result<(), SatelError> {
-        let (tx, rx) = {
-            let mut worker_lock = self.worker.lock().unwrap();
-            if let Some(mut worker) = worker_lock.take() {
-                let (tx, rx) = oneshot::channel();
-                tokio::spawn(async move {
-                    worker.run_with_initial_connect(tx).await;
-                });
-                return rx.await.map_err(|_| SatelError::WorkerDropped)?;
-            }
-            // Jeśli worker został już zabrany, oznacza to że pętla działa
-            let (tx, rx) = oneshot::channel();
-            (tx, rx)
-        };
+        let mut worker_lock = self.worker.lock().unwrap();
+        if let Some(mut worker) = worker_lock.take() {
+            let (state_worker_tx, state_worker_rx) = mpsc::channel(100);
+            worker.state_worker_tx = Some(state_worker_tx);
 
-        self.tx
+            let mut state_worker = SatelAutoRequester {
+                integra: self.clone(),
+                rx: state_worker_rx,
+            };
+
+            // Kanał do powiadomienia o sukcesie początkowego połączenia
+            let (connect_tx, connect_rx) = oneshot::channel();
+
+            // Uruchamiamy StateWorkera
+            tokio::spawn(async move {
+                state_worker.run().await;
+            });
+
+            // Uruchamiamy ConnectionWorkera (przejmuje self)
+            tokio::spawn(async move {
+                worker.run_with_initial_connect(connect_tx).await;
+            });
+
+            // Czekamy na wynik pierwszego połączenia
+            return connect_rx.await.map_err(|_| SatelError::WorkerDropped)?;
+        }
+
+        // Jeśli worker już działa, wysyłamy komendę Connect przez kanał
+        let (tx, rx) = oneshot::channel();
+        if self
+            .tx
             .send(InternalMessage::Connect { response_tx: tx })
             .await
-            .map_err(|_| SatelError::WorkerDropped)?;
+            .is_err()
+        {
+            return Err(SatelError::WorkerDropped);
+        }
 
         rx.await.map_err(|_| SatelError::WorkerDropped)?
     }
@@ -169,9 +205,9 @@ impl SatelIntegra {
         {
             let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
             let status = state.telemetry.status;
-            let can_exchange = status == ConnectionStatus::Connected || 
-                (status == ConnectionStatus::ConnectionLost && self.config.auto_reconnect);
-            
+            let can_exchange = status == ConnectionStatus::Connected
+                || (status == ConnectionStatus::ConnectionLost && self.config.auto_reconnect);
+
             if !can_exchange {
                 return Err(match status {
                     ConnectionStatus::Disconnected => SatelError::NotConnected,
@@ -185,8 +221,10 @@ impl SatelIntegra {
 
         let msg = InternalMessage::Exchange {
             data,
-            write_timeout: write_timeout.unwrap_or(Duration::from_millis(self.config.write_timeout_ms)),
-            read_timeout: read_timeout.unwrap_or(Duration::from_millis(self.config.read_timeout_ms)),
+            write_timeout: write_timeout
+                .unwrap_or(Duration::from_millis(self.config.write_timeout_ms)),
+            read_timeout: read_timeout
+                .unwrap_or(Duration::from_millis(self.config.read_timeout_ms)),
             created_at: Instant::now(),
             max_queue_time: Duration::from_millis(self.config.buffer_timeout_ms),
             response_tx,
@@ -230,23 +268,74 @@ impl SatelIntegra {
         Ok(state.integra_version.clone())
     }
 
+    /// Konfiguruje automatyczne powiadomienia Push (komenda 0x7F).
+    async fn setup_auto_push(&self) -> Result<(), SatelError> {
+        tracing::info!("Konfigurowanie automatycznego odczytu Push (0x7F)...");
+
+        let mut auto_push_data = vec![SatelCommand::ListOfNewData.to_byte()];
+
+        // Bajty 1-6: Dane wysyłane przy zmianie (on change)
+        let mut mask_on_change = [0u8; 6];
+
+        // Bajt 1: bity dla komend 0x00-0x07
+        if self.config.auto_read_zones_violation { mask_on_change[0] |= 1 << 0; }
+        if self.config.auto_read_zones_tamper { mask_on_change[0] |= 1 << 1; }
+        if self.config.auto_read_zones_alarm { mask_on_change[0] |= 1 << 2; }
+        if self.config.auto_read_zones_tamper_alarm { mask_on_change[0] |= 1 << 3; }
+        if self.config.auto_read_zones_alarm_memory { mask_on_change[0] |= 1 << 4; }
+        if self.config.auto_read_zones_tamper_alarm_memory { mask_on_change[0] |= 1 << 5; }
+        if self.config.auto_read_zones_bypass { mask_on_change[0] |= 1 << 6; }
+        if self.config.auto_read_zones_no_violation_trouble { mask_on_change[0] |= 1 << 7; }
+
+        // Bajt 2: bity dla komend 0x08-0x0F
+        if self.config.auto_read_zones_long_violation_trouble { mask_on_change[1] |= 1 << 0; }
+
+        auto_push_data.extend_from_slice(&mask_on_change);
+
+        // Bajty 7-12: Dane wysyłane przy każdym odczycie (on every read) - ustawiamy na 0
+        auto_push_data.extend_from_slice(&[0x00; 6]);
+
+        let response = self.exchange(auto_push_data, None, None).await?;
+
+        // Centrala powinna odpowiedzieć ramką 0x7F (potwierdzenie maski)
+        if response.is_empty() || response[0] != SatelCommand::ListOfNewData.to_byte() {
+            tracing::error!("Nieoczekiwana odpowiedź na konfigurację Push: {:?}", response.get(0));
+            return Err(SatelError::InvalidFrame);
+        }
+
+        tracing::info!("Konfiguracja Push zakończona pomyślnie");
+        Ok(())
+    }
+
     /// Pobiera nazwę wejścia (zony) z centrali.
     pub async fn get_zone_name(&self, zone_id: u16) -> Result<ZoneName, SatelError> {
         tracing::info!("Pobieranie nazwy wejścia {}", zone_id);
 
         let device_type: u8 = 1; // 1 = zone
         let device_id: u8 = if zone_id == 256 { 0 } else { zone_id as u8 };
-        
-        let cmd = vec![SatelCommand::ReadDeviceName.to_byte(), device_type, device_id];
+
+        let cmd = vec![
+            SatelCommand::ReadDeviceName.to_byte(),
+            device_type,
+            device_id,
+        ];
         let response = self.exchange(cmd, None, None).await?;
 
         if !response.is_empty() && response[0] == SatelCommand::ResultCode.to_byte() {
-             tracing::error!("Centrala zwróciła błąd (0xEF) dla nazwy wejścia {}: {:?}", zone_id, response.get(1));
-             return Err(SatelError::InvalidFrame);
+            tracing::error!(
+                "Centrala zwróciła błąd (0xEF) dla nazwy wejścia {}: {:?}",
+                zone_id,
+                response.get(1)
+            );
+            return Err(SatelError::InvalidFrame);
         }
 
         let (id, s_name) = process_zone_name(&response).map_err(|e| {
-            tracing::error!("Błąd podczas przetwarzania nazwy wejścia {}: {:?}", zone_id, e);
+            tracing::error!(
+                "Błąd podczas przetwarzania nazwy wejścia {}: {:?}",
+                zone_id,
+                e
+            );
             e
         })?;
 
@@ -265,7 +354,10 @@ impl SatelIntegra {
     /// Pobiera nazwę wejścia z cache.
     pub fn get_cached_zone_name(&self, zone_id: u16) -> Result<Option<ZoneName>, SatelError> {
         let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
-        Ok(state.zones.get((zone_id.wrapping_sub(1) % 256) as usize).map(|z| z.to_zone_name()))
+        Ok(state
+            .zones
+            .get((zone_id.wrapping_sub(1) % 256) as usize)
+            .map(|z| z.to_zone_name()))
     }
 
     /// Pobiera nazwę wyjścia z centrali.
@@ -274,17 +366,29 @@ impl SatelIntegra {
 
         let device_type: u8 = 4; // 4 = output
         let device_id: u8 = if output_id == 256 { 0 } else { output_id as u8 };
-        
-        let cmd = vec![SatelCommand::ReadDeviceName.to_byte(), device_type, device_id];
+
+        let cmd = vec![
+            SatelCommand::ReadDeviceName.to_byte(),
+            device_type,
+            device_id,
+        ];
         let response = self.exchange(cmd, None, None).await?;
 
         if !response.is_empty() && response[0] == SatelCommand::ResultCode.to_byte() {
-             tracing::error!("Centrala zwróciła błąd (0xEF) dla nazwy wyjścia {}: {:?}", output_id, response.get(1));
-             return Err(SatelError::InvalidFrame);
+            tracing::error!(
+                "Centrala zwróciła błąd (0xEF) dla nazwy wyjścia {}: {:?}",
+                output_id,
+                response.get(1)
+            );
+            return Err(SatelError::InvalidFrame);
         }
 
         let (id, s_name) = process_output_name(&response).map_err(|e| {
-            tracing::error!("Błąd podczas przetwarzania nazwy wyjścia {}: {:?}", output_id, e);
+            tracing::error!(
+                "Błąd podczas przetwarzania nazwy wyjścia {}: {:?}",
+                output_id,
+                e
+            );
             e
         })?;
 
@@ -303,7 +407,10 @@ impl SatelIntegra {
     /// Pobiera nazwę wyjścia z cache.
     pub fn get_cached_output_name(&self, output_id: u16) -> Result<Option<OutputName>, SatelError> {
         let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
-        Ok(state.outputs.get((output_id.wrapping_sub(1) % 256) as usize).map(|o| o.to_output_name()))
+        Ok(state
+            .outputs
+            .get((output_id.wrapping_sub(1) % 256) as usize)
+            .map(|o| o.to_output_name()))
     }
 
     /// Pobiera nazwę strefy (partycji) z centrali.
@@ -312,17 +419,29 @@ impl SatelIntegra {
 
         let device_type: u8 = 0; // 0 = partition/zone
         let device_id: u8 = partition_id as u8;
-        
-        let cmd = vec![SatelCommand::ReadDeviceName.to_byte(), device_type, device_id];
+
+        let cmd = vec![
+            SatelCommand::ReadDeviceName.to_byte(),
+            device_type,
+            device_id,
+        ];
         let response = self.exchange(cmd, None, None).await?;
 
         if !response.is_empty() && response[0] == SatelCommand::ResultCode.to_byte() {
-             tracing::error!("Centrala zwróciła błąd (0xEF) dla nazwy strefy {}: {:?}", partition_id, response.get(1));
-             return Err(SatelError::InvalidFrame);
+            tracing::error!(
+                "Centrala zwróciła błąd (0xEF) dla nazwy strefy {}: {:?}",
+                partition_id,
+                response.get(1)
+            );
+            return Err(SatelError::InvalidFrame);
         }
 
         let (id, partition_name) = process_partition_name(&response).map_err(|e| {
-            tracing::error!("Błąd podczas przetwarzania nazwy strefy {}: {:?}", partition_id, e);
+            tracing::error!(
+                "Błąd podczas przetwarzania nazwy strefy {}: {:?}",
+                partition_id,
+                e
+            );
             e
         })?;
 
@@ -335,8 +454,11 @@ impl SatelIntegra {
         Ok(partition_name)
     }
 
-    /// Pobiera nazwę strefy z cache.
-    pub fn get_cached_partition_name(&self, partition_id: u16) -> Result<Option<PartitionName>, SatelError> {
+    /// Zwraca nazwę strefy z cache.
+    pub fn get_cached_partition_name(
+        &self,
+        partition_id: u16,
+    ) -> Result<Option<PartitionName>, SatelError> {
         let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
         Ok(state.partition_names.get(&partition_id).cloned())
     }
@@ -345,43 +467,55 @@ impl SatelIntegra {
     pub async fn get_zone_temperature(&self, zone_id: u16) -> Result<ZoneTemperature, SatelError> {
         tracing::info!("Pobieranie temperatury wejścia {}", zone_id);
 
-        let cmd = vec![SatelCommand::ReadZoneTemperature.to_byte(), if zone_id == 256 { 0 } else { zone_id as u8 }];
-        
-        let response_result = self.exchange(cmd, None, Some(Duration::from_millis(self.config.temp_read_timeout_ms))).await;
+        let cmd = vec![
+            SatelCommand::ReadZoneTemperature.to_byte(),
+            if zone_id == 256 { 0 } else { zone_id as u8 },
+        ];
+
+        let response_result = self
+            .exchange(
+                cmd,
+                None,
+                Some(Duration::from_millis(self.config.temp_read_timeout_ms)),
+            )
+            .await;
 
         match response_result {
-            Ok(response) => {
-                match process_zone_temperature(&response) {
-                    Ok((id, temp)) => {
-                        let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
-                        let zone = state.zones.get_mut((id.wrapping_sub(1) % 256) as usize)
-                            .ok_or(SatelError::InvalidFrame)?;
+            Ok(response) => match process_zone_temperature(&response) {
+                Ok((id, temp)) => {
+                    let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+                    let zone = state
+                        .zones
+                        .get_mut((id.wrapping_sub(1) % 256) as usize)
+                        .ok_or(SatelError::InvalidFrame)?;
 
-                        zone.temperature_value = temp;
-                        zone.temperature_read_at = Local::now();
-                        
-                        // Logika: NoRead -> Ok
-                        if zone.temperature_status == crate::satel_integra_data::TemperatureSensorStatus::NoRead {
-                            zone.temperature_status = crate::satel_integra_data::TemperatureSensorStatus::Ok;
-                        }
+                    zone.temperature_value = temp;
+                    zone.temperature_read_at = Local::now();
 
-                        // Dekrementacja liczników current
-                        if zone.temperature_timeout_errors_current > 0 {
-                            zone.temperature_timeout_errors_current -= 1;
-                        }
-                        if zone.temperature_sensor_errors_current > 0 {
-                            zone.temperature_sensor_errors_current -= 1;
-                        }
-
-                        tracing::info!("Pobrano temperaturę wejścia {}: {}°C", id, temp);
-                        return Ok(zone.to_zone_temperature());
+                    // Logika: NoRead -> Ok
+                    if zone.temperature_status
+                        == crate::satel_integra_data::TemperatureSensorStatus::NoRead
+                    {
+                        zone.temperature_status =
+                            crate::satel_integra_data::TemperatureSensorStatus::Ok;
                     }
-                    Err(e) => {
-                        self.update_temp_error(zone_id, &e)?;
-                        return Err(e);
+
+                    // Dekrementacja liczników current
+                    if zone.temperature_timeout_errors_current > 0 {
+                        zone.temperature_timeout_errors_current -= 1;
                     }
+                    if zone.temperature_sensor_errors_current > 0 {
+                        zone.temperature_sensor_errors_current -= 1;
+                    }
+
+                    tracing::info!("Pobrano temperaturę wejścia {}: {}°C", id, temp);
+                    return Ok(zone.to_zone_temperature());
                 }
-            }
+                Err(e) => {
+                    self.update_temp_error(zone_id, &e)?;
+                    return Err(e);
+                }
+            },
             Err(e) => {
                 self.update_temp_error(zone_id, &e)?;
                 match e {
@@ -394,18 +528,20 @@ impl SatelIntegra {
 
     fn update_temp_error(&self, zone_id: u16, error: &SatelError) -> Result<(), SatelError> {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
-        let zone = state.zones.get_mut((zone_id.wrapping_sub(1) % 256) as usize)
+        let zone = state
+            .zones
+            .get_mut((zone_id.wrapping_sub(1) % 256) as usize)
             .ok_or(SatelError::InvalidFrame)?;
-        
+
         match error {
             SatelError::Timeout | SatelError::TemperatureNotSupportedOrTimeOut => {
                 zone.temperature_timeout_errors_total += 1;
                 zone.temperature_timeout_errors_current += 1;
-            },
+            }
             SatelError::TemperatureSensorError => {
                 zone.temperature_sensor_errors_total += 1;
                 zone.temperature_sensor_errors_current += 1;
-            },
+            }
             _ => {}
         }
         zone.temperature_read_at = Local::now();
@@ -413,13 +549,22 @@ impl SatelIntegra {
     }
 
     /// Pobiera temperaturę wejścia z cache.
-    pub fn get_cached_zone_temperature(&self, zone_id: u16) -> Result<Option<ZoneTemperature>, SatelError> {
+    pub fn get_cached_zone_temperature(
+        &self,
+        zone_id: u16,
+    ) -> Result<Option<ZoneTemperature>, SatelError> {
         let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
-        Ok(state.zones.get((zone_id.wrapping_sub(1) % 256) as usize).map(|z| z.to_zone_temperature()))
+        Ok(state
+            .zones
+            .get((zone_id.wrapping_sub(1) % 256) as usize)
+            .map(|z| z.to_zone_temperature()))
     }
 
     /// Pobiera temperaturę wejścia z mechanizmem blokowania wadliwych czujników.
-    pub async fn get_zone_temperature_with_blocking(&self, zone_id: u16) -> Result<ZoneTemperature, SatelError> {
+    pub async fn get_zone_temperature_with_blocking(
+        &self,
+        zone_id: u16,
+    ) -> Result<ZoneTemperature, SatelError> {
         use crate::satel_integra_data::TemperatureSensorStatus;
 
         // 1. Sprawdzenie czy blokowanie jest w ogóle włączone
@@ -430,12 +575,17 @@ impl SatelIntegra {
         // 2. Pobranie aktualnego stanu z cache (bezpieczna obsługa locka)
         let zone_info = {
             let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
-            state.zones.get((zone_id.wrapping_sub(1) % 256) as usize).cloned()
+            state
+                .zones
+                .get((zone_id.wrapping_sub(1) % 256) as usize)
+                .cloned()
         };
 
         if let Some(info) = zone_info {
             // A) Jeśli stan jest już zablokowany (inny niż Ok lub NoRead)
-            if info.temperature_status != TemperatureSensorStatus::Ok && info.temperature_status != TemperatureSensorStatus::NoRead {
+            if info.temperature_status != TemperatureSensorStatus::Ok
+                && info.temperature_status != TemperatureSensorStatus::NoRead
+            {
                 return Err(SatelError::TempTooManyErrors);
             }
 
@@ -443,7 +593,8 @@ impl SatelIntegra {
             if info.temperature_timeout_errors_current >= self.config.temp_max_timeout_errors {
                 {
                     let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
-                    if let Some(zone) = state.zones.get_mut((zone_id.wrapping_sub(1) % 256) as usize) {
+                    if let Some(zone) = state.zones.get_mut((zone_id.wrapping_sub(1) % 256) as usize)
+                    {
                         zone.temperature_status = TemperatureSensorStatus::SensorMissing;
                     }
                 }
@@ -453,7 +604,8 @@ impl SatelIntegra {
             if info.temperature_sensor_errors_current >= self.config.temp_max_sensor_errors {
                 {
                     let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
-                    if let Some(zone) = state.zones.get_mut((zone_id.wrapping_sub(1) % 256) as usize) {
+                    if let Some(zone) = state.zones.get_mut((zone_id.wrapping_sub(1) % 256) as usize)
+                    {
                         zone.temperature_status = TemperatureSensorStatus::CommunicationError;
                     }
                 }
@@ -485,16 +637,21 @@ impl SatelIntegra {
             }
         }
 
-        tracing::info!("Zaktualizowano stan sabotaży dla {} wejść", result.states.len());
+        tracing::info!(
+            "Zaktualizowano stan sabotaży dla {} wejść",
+            result.states.len()
+        );
         Ok(())
     }
 
     /// Pobiera zagregowany status pojedynczego wejścia z cache.
     pub fn get_cached_zone_status(&self, zone_id: u16) -> Result<Option<ZoneStatus>, SatelError> {
         let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
-        
-        Ok(state.zones.get((zone_id.wrapping_sub(1) % 256) as usize).map(|z| {
-            ZoneStatus {
+
+        Ok(state
+            .zones
+            .get((zone_id.wrapping_sub(1) % 256) as usize)
+            .map(|z| ZoneStatus {
                 id: z.id,
                 name: z.zone_name.clone(),
                 temperature: z.temperature_value,
@@ -516,8 +673,7 @@ impl SatelIntegra {
                 no_violation_trouble_at: z.no_violation_trouble_read_at,
                 long_violation_trouble_state: z.long_violation_trouble_state,
                 long_violation_trouble_at: z.long_violation_trouble_read_at,
-            }
-        }))
+            }))
     }
 
     /// Pobiera stan alarmów wszystkich wejść z centrali i aktualizuje cache.
@@ -540,7 +696,10 @@ impl SatelIntegra {
             }
         }
 
-        tracing::info!("Zaktualizowano stan alarmów dla {} wejść", result.states.len());
+        tracing::info!(
+            "Zaktualizowano stan alarmów dla {} wejść",
+            result.states.len()
+        );
         Ok(())
     }
 
@@ -564,7 +723,10 @@ impl SatelIntegra {
             }
         }
 
-        tracing::info!("Zaktualizowano stan naruszeń dla {} wejść", result.states.len());
+        tracing::info!(
+            "Zaktualizowano stan naruszeń dla {} wejść",
+            result.states.len()
+        );
         Ok(())
     }
 
@@ -588,7 +750,10 @@ impl SatelIntegra {
             }
         }
 
-        tracing::info!("Zaktualizowano stan alarmów sabotażowych dla {} wejść", result.states.len());
+        tracing::info!(
+            "Zaktualizowano stan alarmów sabotażowych dla {} wejść",
+            result.states.len()
+        );
         Ok(())
     }
 
@@ -612,7 +777,10 @@ impl SatelIntegra {
             }
         }
 
-        tracing::info!("Zaktualizowano stan pamięci alarmów dla {} wejść", result.states.len());
+        tracing::info!(
+            "Zaktualizowano stan pamięci alarmów dla {} wejść",
+            result.states.len()
+        );
         Ok(())
     }
 
@@ -624,7 +792,10 @@ impl SatelIntegra {
         let cmd = vec![SatelCommand::ZonesTamperAlarmMemory.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
 
-        let result = process_zones_tamper_alarm_memory(&response, &self.config.io_tamper_alarm_memory_invert)?;
+        let result = process_zones_tamper_alarm_memory(
+            &response,
+            &self.config.io_tamper_alarm_memory_invert,
+        )?;
 
         {
             let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
@@ -636,7 +807,10 @@ impl SatelIntegra {
             }
         }
 
-        tracing::info!("Zaktualizowano stan pamięci alarmów sabotażowych dla {} wejść", result.states.len());
+        tracing::info!(
+            "Zaktualizowano stan pamięci alarmów sabotażowych dla {} wejść",
+            result.states.len()
+        );
         Ok(())
     }
 
@@ -660,7 +834,10 @@ impl SatelIntegra {
             }
         }
 
-        tracing::info!("Zaktualizowano stan blokad dla {} wejść", result.states.len());
+        tracing::info!(
+            "Zaktualizowano stan blokad dla {} wejść",
+            result.states.len()
+        );
         Ok(())
     }
 
@@ -672,7 +849,10 @@ impl SatelIntegra {
         let cmd = vec![SatelCommand::ZonesNoViolationTrouble.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
 
-        let result = process_zones_no_violation_trouble(&response, &self.config.io_no_violation_trouble_invert)?;
+        let result = process_zones_no_violation_trouble(
+            &response,
+            &self.config.io_no_violation_trouble_invert,
+        )?;
 
         {
             let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
@@ -684,7 +864,10 @@ impl SatelIntegra {
             }
         }
 
-        tracing::info!("Zaktualizowano stan awarii 'brak naruszenia' dla {} wejść", result.states.len());
+        tracing::info!(
+            "Zaktualizowano stan awarii 'brak naruszenia' dla {} wejść",
+            result.states.len()
+        );
         Ok(())
     }
 
@@ -696,7 +879,10 @@ impl SatelIntegra {
         let cmd = vec![SatelCommand::ZonesLongViolationTrouble.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
 
-        let result = process_zones_long_violation_trouble(&response, &self.config.io_long_violation_trouble_invert)?;
+        let result = process_zones_long_violation_trouble(
+            &response,
+            &self.config.io_long_violation_trouble_invert,
+        )?;
 
         {
             let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
@@ -708,88 +894,208 @@ impl SatelIntegra {
             }
         }
 
-        tracing::info!("Zaktualizowano stan awarii 'długie naruszenie' dla {} wejść", result.states.len());
+        tracing::info!(
+            "Zaktualizowano stan awarii 'długie naruszenie' dla {} wejść",
+            result.states.len()
+        );
         Ok(())
     }
 }
 
+/// SatelAutoRequester odpowiada za przetwarzanie danych Push oraz automatyczne zapytania (Keep-Alive).
+pub struct SatelAutoRequester {
+    integra: SatelIntegra,
+    rx: mpsc::Receiver<StateWorkerMessage>,
+}
+
+impl SatelAutoRequester {
+    pub async fn run(&mut self) {
+        tracing::info!("SatelAutoRequester uruchomiony");
+        let mut check_interval = tokio::time::interval(Duration::from_millis(200));
+
+        loop {
+            tokio::select! {
+                maybe_msg = self.rx.recv() => {
+                    if let Some(msg) = maybe_msg {
+                        match msg {
+                            StateWorkerMessage::Frame(frame) => {
+                                self.handle_auto_frame(&frame);
+                            }
+                            StateWorkerMessage::Event(event) => {
+                                tracing::info!("SatelAutoRequester otrzymał zdarzenie: {:?}", event);
+                                match event {
+                                    ConnectionEvent::Connected => {
+                                        tracing::info!("Centrala połączona - inicjowanie monitorowania (0x7F) za 500ms...");
+                                        let integra = self.integra.clone();
+                                        tokio::spawn(async move {
+                                            tokio::time::sleep(Duration::from_millis(500)).await;
+                                            if let Err(e) = integra.setup_auto_push().await {
+                                                tracing::error!("Błąd podczas automatycznej konfiguracji Push (0x7F): {}", e);
+                                            }
+                                        });
+                                    }
+                                    ConnectionEvent::ConnectionLost => {
+                                        tracing::warn!("Połączenie utracone - oczekiwanie na wznowienie");
+                                    }
+                                    ConnectionEvent::Disconnected => {
+                                        tracing::info!("Połączenie zamknięte");
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                _ = check_interval.tick() => {
+                    let (status, last_send) = {
+                        let state = self.integra.state_handle();
+                        let s = state.read().unwrap();
+                        (s.telemetry.status, s.telemetry.last_send_at)
+                    };
+
+                    if status == ConnectionStatus::Connected && last_send.elapsed() >= Duration::from_secs(2) {
+                        // Automatyczne odpytanie o wersję dla podtrzymania połączenia,
+                        // jeśli przez ostatnie 2 sekundy nic nie zostało wysłane.
+                        if let Err(e) = self.integra.get_integra_version().await {
+                            tracing::debug!("SatelAutoRequester: Keep-alive pominięty: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+        tracing::info!("SatelAutoRequester zatrzymany");
+    }
+
+    fn handle_auto_frame(&mut self, frame: &[u8]) {
+        if frame.is_empty() {
+            return;
+        }
+
+        match frame[0] {
+            0x00 => {
+                if let Ok(d) = process_zones_violation(frame, &self.integra.config.io_violation_invert) {
+                    let state = self.integra.state_handle();
+                    let mut s = state.write().unwrap();
+                    for (i, &v) in d.states.iter().enumerate() {
+                        if let Some(z) = s.zones.get_mut(i) {
+                            z.violation_state = v;
+                            z.violation_read_at = d.read_at;
+                        }
+                    }
+                }
+            }
+            0x01 => {
+                if let Ok(d) = process_zones_tamper(frame, &self.integra.config.io_tamper_invert) {
+                    let state = self.integra.state_handle();
+                    let mut s = state.write().unwrap();
+                    for (i, &v) in d.states.iter().enumerate() {
+                        if let Some(z) = s.zones.get_mut(i) {
+                            z.tamper_state = v;
+                            z.tamper_read_at = d.read_at;
+                        }
+                    }
+                }
+            }
+            0x02 => {
+                if let Ok(d) = process_zones_alarm(frame, &self.integra.config.io_alarm_invert) {
+                    let state = self.integra.state_handle();
+                    let mut s = state.write().unwrap();
+                    for (i, &v) in d.states.iter().enumerate() {
+                        if let Some(z) = s.zones.get_mut(i) {
+                            z.alarm_state = v;
+                            z.alarm_read_at = d.read_at;
+                        }
+                    }
+                }
+            }
+            0x17 => {
+                let data = &frame[1..];
+                if data.len() >= 16 {
+                    let state = self.integra.state_handle();
+                    let _s = state.write().unwrap();
+                    for (byte_idx, &_byte) in data.iter().take(32).enumerate() {
+                        for bit in 0..8 {
+                            let _idx = byte_idx * 8 + bit;
+                            // if let Some(_out) = _s.outputs.get_mut(_idx) {
+                            // tu można by aktualizować stan wyjścia
+                            // }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Worker zarządzający fizycznym połączeniem w tle.
-pub struct SatelWorker {
+pub struct SatelConnectionWorker {
     config: Config,
     state: SatelStateHandle,
     rx: mpsc::Receiver<InternalMessage>,
     stream: Option<FramedStream>,
     consecutive_failures: usize,
+    state_worker_tx: Option<mpsc::Sender<StateWorkerMessage>>,
 }
 
-impl SatelWorker {
+impl SatelConnectionWorker {
     /// Główna pętla workera z obsługą początkowego połączenia.
-    async fn run_with_initial_connect(&mut self, initial_response_tx: oneshot::Sender<Result<(), SatelError>>) {
-        let result = self.connect().await;
-        let _ = initial_response_tx.send(result);
+    async fn run_with_initial_connect(mut self, on_connect: oneshot::Sender<Result<(), SatelError>>) {
+        let result = self.connect_task().await;
+        if let Err(e) = &result {
+            tracing::error!("Początkowe połączenie nieudane: {:?}", e);
+        }
+        let _ = on_connect.send(result);
         self.run().await;
     }
 
     /// Główna pętla workera.
-    pub async fn run(&mut self) {
+    pub async fn run(mut self) {
         loop {
-            // Sprawdzamy stan połączenia przed selectem
-            let stream_active = self.stream.is_some();
-            
+            let (is_connected, should_reconnect) = {
+                let is_connected = self.stream.is_some();
+                let should_reconnect = {
+                    let s = self.state.read().unwrap();
+                    s.telemetry.status == ConnectionStatus::ConnectionLost
+                        && self.config.auto_reconnect
+                };
+                (is_connected, should_reconnect)
+            };
+
             tokio::select! {
-                // Obsługa przychodzących komunikatów
-                Some(msg) = self.rx.recv() => {
-                    self.handle_message(msg).await;
-                }
-                
-                // Odbieranie danych Push gdy połączenie jest bezczynne
-                res = Self::receive_push_internal(self.stream.as_mut(), &self.config, &self.state), if stream_active => {
-                    if let Err(e) = res {
-                        tracing::error!("Błąd podczas odbierania danych Push: {:?}", e);
-                        self.stream = None; // Zamknij strumień przy błędzie I/O
+                // Aby uniknąć partial move, używamy &mut self.rx
+                maybe_msg = self.rx.recv() => {
+                    if let Some(msg) = maybe_msg {
+                        let state = self.state.clone();
+                        let state_worker_tx = self.state_worker_tx.clone();
+                        self.handle_message_internal(msg, state, state_worker_tx).await;
+                    } else {
+                        break;
                     }
                 }
 
-                // Pasywne monitorowanie i próby połączenia w tle
-                _ = sleep(Duration::from_millis(100)), if !stream_active && self.config.auto_reconnect => {
-                     if self.should_retry_connection() {
-                         let _ = self.ensure_connected().await;
-                     }
+                res = Self::receive_push_internal(&mut self.stream, &self.state, &self.state_worker_tx) => {
+                    if let Err(e) = res {
+                        tracing::error!("Błąd podczas odbierania danych Push: {:?}", e);
+                        self.set_connection_lost_internal().await;
+                    }
+                }
+
+                _ = sleep(Duration::from_millis(1000)), if !is_connected && should_reconnect => {
+                    let _ = self.ensure_connected().await;
                 }
             }
         }
+        tracing::info!("SatelConnectionWorker zatrzymany");
     }
 
-    /// Pomocnicza funkcja do odbierania push, aby uniknąć problemów z borrow checkerem na `self`
-    async fn receive_push_internal(
-        stream: Option<&mut FramedStream>, 
-        config: &Config, 
-        state_handle: &SatelStateHandle
-    ) -> Result<(), SatelError> {
-        let Some(stream) = stream else { return Ok(()); };
-
-        // Krótki timeout aby nie blokować pętli głównej
-        match timeout(Duration::from_millis(10), stream.next()).await {
-            Ok(Some(Ok(frame))) => {
-                {
-                    let state = state_handle.read().map_err(|_| SatelError::StatePoisoned)?;
-                    state.telemetry.bytes_received.fetch_add(frame.len(), Ordering::Relaxed);
-                }
-                Self::handle_auto_frame_internal(&frame, config, state_handle);
-                Ok(())
-            }
-            Ok(Some(Err(e))) => Err(SatelError::Io(e)),
-            Ok(None) => Err(SatelError::StreamClosed),
-            Err(_) => Ok(()), // Timeout - brak danych, to normalne
-        }
-    }
-
-    fn should_retry_connection(&self) -> bool {
-        let state = self.state.read().unwrap();
-        state.telemetry.status == ConnectionStatus::ConnectionLost
-    }
-
-    async fn handle_message(&mut self, msg: InternalMessage) {
+    async fn handle_message_internal(
+        &mut self,
+        msg: InternalMessage,
+        state: SatelStateHandle,
+        state_worker_tx: Option<mpsc::Sender<StateWorkerMessage>>,
+    ) {
         match msg {
             InternalMessage::Exchange {
                 data,
@@ -800,37 +1106,38 @@ impl SatelWorker {
                 response_tx,
             } => {
                 if created_at.elapsed() > max_queue_time {
-                    tracing::info!("Odrzucono wiadomość z kolejki: przekroczono czas TTL ({:?})", max_queue_time);
                     let _ = response_tx.send(Err(SatelError::MessageExpired));
                     return;
                 }
-
                 if let Err(e) = self.ensure_connected().await {
                     let _ = response_tx.send(Err(e));
                     return;
                 }
-
                 let cmd_byte = data.first().cloned().unwrap_or(0);
-                let result = self.perform_exchange(data, cmd_byte, write_timeout, read_timeout).await;
+                let result = self
+                    .perform_exchange(data, cmd_byte, write_timeout, read_timeout)
+                    .await;
                 let _ = response_tx.send(result);
             }
             InternalMessage::Connect { response_tx } => {
-                let status = self.state.read().unwrap().telemetry.status;
+                let status = state.read().unwrap().telemetry.status;
                 if status == ConnectionStatus::Connected {
                     let _ = response_tx.send(Err(SatelError::AlreadyConnected));
                 } else {
-                    let result = self.connect().await;
-                    let _ = response_tx.send(result);
+                    let _ = response_tx.send(self.connect_task().await);
                 }
             }
             InternalMessage::Disconnect { response_tx } => {
-                let status = self.state.read().unwrap().telemetry.status;
+                let status = state.read().unwrap().telemetry.status;
                 if status == ConnectionStatus::Disconnected {
                     let _ = response_tx.send(Err(SatelError::NotConnected));
                 } else {
                     self.stream = None;
-                    let mut state = self.state.write().unwrap();
-                    state.telemetry.status = ConnectionStatus::Disconnected;
+                    {
+                        let mut s = state.write().unwrap();
+                        s.telemetry.status = ConnectionStatus::Disconnected;
+                    }
+                    Self::notify_state_worker(&state_worker_tx, StateWorkerMessage::Event(ConnectionEvent::Disconnected)).await;
                     let _ = response_tx.send(Ok(()));
                 }
             }
@@ -849,220 +1156,158 @@ impl SatelWorker {
         // Send
         match timeout(write_timeout, stream.send(data.clone())).await {
             Ok(Ok(_)) => {
-                self.state
-                    .read()
-                    .unwrap()
-                    .telemetry
-                    .bytes_sent
-                    .fetch_add(data.len(), Ordering::Relaxed);
+                let mut s = self.state.write().unwrap();
+                s.telemetry.bytes_sent.fetch_add(data.len(), Ordering::Relaxed);
+                s.telemetry.last_send_at = Instant::now();
             }
             Ok(Err(e)) => {
-                self.set_connection_lost();
+                self.set_connection_lost_internal().await;
                 return Err(SatelError::Io(e));
             }
-            Err(_) => {
-                tracing::info!("Przekroczono czas oczekiwania na wysłanie danych (timeout: {:?})", write_timeout);
-                return Err(SatelError::Timeout);
-            }
+            Err(_) => return Err(SatelError::Timeout),
         }
 
         // Receive with filtering Push notifications
         let start = Instant::now();
         while start.elapsed() < read_timeout {
             let remaining = read_timeout.saturating_sub(start.elapsed());
+            let stream = self.stream.as_mut().unwrap();
             match timeout(remaining, stream.next()).await {
                 Ok(Some(Ok(frame))) => {
                     {
-                        let state = self.state.read().unwrap();
-                        state.telemetry.bytes_received.fetch_add(frame.len(), Ordering::Relaxed);
+                        let s = self.state.read().unwrap();
+                        s.telemetry.bytes_received.fetch_add(frame.len(), Ordering::Relaxed);
                     }
-
                     if frame.is_empty() { continue; }
-                    let frame_cmd = frame[0];
-
-                    // Jeśli to jest odpowiedź na naszą komendę lub błąd 0xEF -> zwracamy
-                    if frame_cmd == expected_cmd || frame_cmd == 0xEF {
+                    if frame[0] == expected_cmd || frame[0] == 0xEF {
                         return Ok(frame);
                     } else {
-                        // To jest ramka Push (np. 0x00) -> procesujemy ją w locie i czekamy dalej
-                        Self::handle_auto_frame_internal(&frame, &self.config, &self.state);
+                        Self::notify_state_worker(&self.state_worker_tx, StateWorkerMessage::Frame(frame)).await;
                     }
                 }
                 Ok(Some(Err(e))) => {
-                    self.set_connection_lost();
+                    self.set_connection_lost_internal().await;
                     return Err(SatelError::Io(e));
                 }
                 Ok(None) => {
-                    self.set_connection_lost();
+                    self.set_connection_lost_internal().await;
                     return Err(SatelError::StreamClosed);
                 }
-                Err(_) => {
-                    tracing::info!("Przekroczono czas oczekiwania na odpowiedź z centrali (timeout: {:?})", read_timeout);
-                    return Err(SatelError::Timeout);
-                }
+                Err(_) => break,
             }
         }
         Err(SatelError::Timeout)
     }
 
-    async fn connect(&mut self) -> Result<(), SatelError> {
-        let conn_timeout = Duration::from_millis(self.config.read_timeout_ms);
+    async fn set_connection_lost_internal(&mut self) {
+        self.stream = None;
+        let changed = {
+            let mut s = self.state.write().unwrap();
+            if s.telemetry.status == ConnectionStatus::Connected {
+                s.telemetry.status = ConnectionStatus::ConnectionLost;
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
+            Self::notify_state_worker(&self.state_worker_tx, StateWorkerMessage::Event(ConnectionEvent::ConnectionLost)).await;
+        }
+    }
 
-        tracing::info!("Podejmowanie próby połączenia z centralą...");
+    async fn notify_state_worker(
+        state_worker_tx: &Option<mpsc::Sender<StateWorkerMessage>>,
+        msg: StateWorkerMessage,
+    ) {
+        if let Some(tx) = state_worker_tx {
+            let _ = tx.send(msg).await;
+        }
+    }
+
+    async fn receive_push_internal(
+        stream_opt: &mut Option<FramedStream>,
+        state: &SatelStateHandle,
+        state_worker_tx: &Option<mpsc::Sender<StateWorkerMessage>>,
+    ) -> Result<(), SatelError> {
+        let Some(ref mut stream) = stream_opt else {
+            return Ok(());
+        };
+        match timeout(Duration::from_millis(100), stream.next()).await {
+            Ok(Some(Ok(frame))) => {
+                {
+                    let s = state.read().map_err(|_| SatelError::StatePoisoned)?;
+                    s.telemetry.bytes_received.fetch_add(frame.len(), Ordering::Relaxed);
+                }
+                Self::notify_state_worker(state_worker_tx, StateWorkerMessage::Frame(frame)).await;
+                Ok(())
+            }
+            Ok(Some(Err(e))) => Err(SatelError::Io(e)),
+            Ok(None) => Err(SatelError::StreamClosed),
+            Err(_) => Ok(()),
+        }
+    }
+
+    async fn connect_task(&mut self) -> Result<(), SatelError> {
+        let conn_timeout = Duration::from_millis(self.config.read_timeout_ms);
+        tracing::info!("Podejmowanie próby połączenia...");
 
         let stream_result = timeout(conn_timeout, async {
             match &self.config.connection {
                 ConnectionConfig::Tcp { host, port } => {
-                    let stream: Box<dyn AsyncReadWrite> =
-                        Box::new(TcpStream::connect((host.as_str(), *port)).await?);
-                    Ok(stream)
+                    let stream = TcpStream::connect((host.as_str(), *port)).await.map_err(SatelError::from)?;
+                    let boxed: Box<dyn AsyncReadWrite> = Box::new(stream);
+                    Ok::<Box<dyn AsyncReadWrite>, SatelError>(boxed)
                 }
                 ConnectionConfig::Uart { path, baud_rate } => {
-                    let stream: Box<dyn AsyncReadWrite> =
-                        Box::new(tokio_serial::new(path, *baud_rate).open_native_async()?);
-                    Ok(stream)
+                    let stream = tokio_serial::new(path, *baud_rate).open_native_async().map_err(SatelError::from)?;
+                    let boxed: Box<dyn AsyncReadWrite> = Box::new(stream);
+                    Ok::<Box<dyn AsyncReadWrite>, SatelError>(boxed)
                 }
             }
-        })
-        .await;
+        }).await;
 
-        let stream: Box<dyn AsyncReadWrite> = match stream_result {
+        let stream = match stream_result {
             Ok(Ok(s)) => {
                 self.consecutive_failures = 0;
                 s
             }
-            Ok(Err(e)) => {
+            _ => {
                 self.consecutive_failures += 1;
-                let mut state = self.state.write().unwrap();
-                state.telemetry.status = if self.config.auto_reconnect {
-                    ConnectionStatus::ConnectionLost
-                } else {
-                    ConnectionStatus::Disconnected
-                };
-                let err = SatelError::Io(e);
-                tracing::error!("Błąd podczas łączenia się z centralą: {}", err);
-                return Err(err);
-            }
-            Err(_) => {
-                self.consecutive_failures += 1;
-                let mut state = self.state.write().unwrap();
-                state.telemetry.status = if self.config.auto_reconnect {
-                    ConnectionStatus::ConnectionLost
-                } else {
-                    ConnectionStatus::Disconnected
-                };
-                tracing::error!("Przekroczono czas oczekiwania na połączenie z centralą (timeout: {:?})", conn_timeout);
+                let mut s = self.state.write().unwrap();
+                s.telemetry.status = if self.config.auto_reconnect { ConnectionStatus::ConnectionLost } else { ConnectionStatus::Disconnected };
                 return Err(SatelError::Timeout);
             }
         };
 
-        let framed = Framed::new(stream, SatelCodec::default());
-        self.stream = Some(framed);
-
-        let mut state = self.state.write().unwrap();
-        state.telemetry.status = ConnectionStatus::Connected;
-        state.telemetry.last_connected_at = Some(SystemTime::now());
-
-        let conn_type = match &self.config.connection {
-            ConnectionConfig::Tcp { host, port } => ConnectionType::Tcp(host.clone(), *port),
-            ConnectionConfig::Uart { path, .. } => ConnectionType::Uart(path.clone()),
-        };
-        state.connection_type = Some(conn_type);
-        state.telemetry.bytes_sent.store(0, Ordering::Relaxed);
-        state.telemetry.bytes_received.store(0, Ordering::Relaxed);
-
-        tracing::info!("Połączono pomyślnie!");
+        self.stream = Some(Framed::new(stream, SatelCodec::default()));
+        {
+            let mut s = self.state.write().unwrap();
+            s.telemetry.status = ConnectionStatus::Connected;
+            s.telemetry.last_connected_at = Some(SystemTime::now());
+            s.connection_type = Some(match &self.config.connection {
+                ConnectionConfig::Tcp { host, port } => ConnectionType::Tcp(host.clone(), *port),
+                ConnectionConfig::Uart { path, .. } => ConnectionType::Uart(path.clone()),
+            });
+        }
+        Self::notify_state_worker(&self.state_worker_tx, StateWorkerMessage::Event(ConnectionEvent::Connected)).await;
         Ok(())
     }
 
     async fn ensure_connected(&mut self) -> Result<(), SatelError> {
-        if self.stream.is_some() {
-            return Ok(());
-        }
-
-        tracing::info!("Wykryto brak aktywnego połączenia. Próba nawiązania...");
-
+        if self.stream.is_some() { return Ok(()); }
         {
-            let state = self.state.read().unwrap();
-            if state.telemetry.status == ConnectionStatus::Disconnected {
-                return Err(SatelError::NotConnected);
-            }
+            let s = self.state.read().unwrap();
+            if s.telemetry.status == ConnectionStatus::Disconnected { return Err(SatelError::NotConnected); }
         }
-
-        if !self.config.auto_reconnect && self.consecutive_failures > 0 {
-             return Err(SatelError::NotConnected);
-        }
-
-        if self.consecutive_failures > 0 {
-            let delay = self.calculate_backoff();
-            sleep(delay).await;
-        }
-
-        if let Ok(state) = self.state.read() {
-            state.telemetry.reconnect_count.fetch_add(1, Ordering::Relaxed);
-        }
-
-        self.connect().await
+        if !self.config.auto_reconnect && self.consecutive_failures > 0 { return Err(SatelError::NotConnected); }
+        if self.consecutive_failures > 0 { sleep(self.calculate_backoff()).await; }
+        if let Ok(s) = self.state.read() { s.telemetry.reconnect_count.fetch_add(1, Ordering::Relaxed); }
+        self.connect_task().await
     }
 
     fn calculate_backoff(&self) -> Duration {
-        if self.consecutive_failures <= 10 {
-            Duration::from_millis(500)
-        } else {
-            let additional_ms = (self.consecutive_failures as u64 - 10) * 500;
-            let total_ms = 500 + additional_ms;
-            let max_ms = 120 * 1000;
-            Duration::from_millis(total_ms.min(max_ms))
-        }
-    }
-
-    fn set_connection_lost(&mut self) {
-        self.stream = None;
-        let mut state = self.state.write().unwrap();
-        if state.telemetry.status == ConnectionStatus::Connected {
-            state.telemetry.status = ConnectionStatus::ConnectionLost;
-        }
-    }
-
-    /// Statyczna wersja procesowania, aby uniknąć problemów z borrow checkerem
-    fn handle_auto_frame_internal(frame: &[u8], config: &Config, state_handle: &SatelStateHandle) {
-        if frame.is_empty() { return; }
-        
-        match frame[0] {
-            0x00 => if let Ok(d) = process_zones_violation(frame, &config.io_violation_invert) {
-                let mut s = state_handle.write().unwrap();
-                for (i, &v) in d.states.iter().enumerate() {
-                    if let Some(z) = s.zones.get_mut(i) { z.violation_state = v; z.violation_read_at = d.read_at; }
-                }
-            },
-            0x01 => if let Ok(d) = process_zones_tamper(frame, &config.io_tamper_invert) {
-                let mut s = state_handle.write().unwrap();
-                for (i, &v) in d.states.iter().enumerate() {
-                    if let Some(z) = s.zones.get_mut(i) { z.tamper_state = v; z.tamper_read_at = d.read_at; }
-                }
-            },
-            0x02 => if let Ok(d) = process_zones_alarm(frame, &config.io_alarm_invert) {
-                let mut s = state_handle.write().unwrap();
-                for (i, &v) in d.states.iter().enumerate() {
-                    if let Some(z) = s.zones.get_mut(i) { z.alarm_state = v; z.alarm_read_at = d.read_at; }
-                }
-            },
-            0x17 => {
-                let data = &frame[1..];
-                if data.len() >= 16 {
-                    let mut s = state_handle.write().unwrap();
-                    for (byte_idx, &byte) in data.iter().take(32).enumerate() {
-                        for bit in 0..8 {
-                            let idx = byte_idx * 8 + bit;
-                            if let Some(_out) = s.outputs.get_mut(idx) {
-                                // tu można by aktualizować stan wyjścia
-                            }
-                        }
-                    }
-                }
-            },
-            _ => {}
-        }
+        let ms = if self.consecutive_failures <= 10 { 500 } else { 500 + (self.consecutive_failures as u64 - 10) * 500 };
+        Duration::from_millis(ms.min(120000))
     }
 }
 
@@ -1086,20 +1331,12 @@ impl Decoder for SatelCodec {
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         loop {
-            if src.len() < 2 {
-                return Ok(None);
-            }
+            if src.len() < 2 { return Ok(None); }
             if let Some(pos) = src.windows(2).position(|w| w == [0xFE, 0xFE]) {
-                if pos > 0 {
-                    src.advance(pos);
-                }
+                if pos > 0 { src.advance(pos); }
                 break;
             } else {
-                let to_advance = if src.last() == Some(&0xFE) {
-                    src.len() - 1
-                } else {
-                    src.len()
-                };
+                let to_advance = if src.last() == Some(&0xFE) { src.len() - 1 } else { src.len() };
                 src.advance(to_advance);
                 return Ok(None);
             }
@@ -1107,7 +1344,6 @@ impl Decoder for SatelCodec {
 
         if let Some(pos) = src.windows(2).position(|window| window == [0xFE, 0x0D]) {
             let frame_raw = src.split_to(pos + 2).to_vec();
-
             let mut data_with_crc = Vec::new();
             let mut i = 2;
             while i < frame_raw.len() - 2 {
@@ -1119,58 +1355,33 @@ impl Decoder for SatelCodec {
                     i += 1;
                 }
             }
-
-            if data_with_crc.len() < 2 {
-                return self.decode(src);
-            }
-
-            let received_crc_low = data_with_crc.pop().unwrap();
-            let received_crc_high = data_with_crc.pop().unwrap();
-            let received_crc = u16::from_be_bytes([received_crc_high, received_crc_low]);
-
-            let calculated_crc = calculate_crc(&data_with_crc);
-
-            if received_crc == calculated_crc {
-                return Ok(Some(data_with_crc));
+            if data_with_crc.len() < 2 { return self.decode(src); }
+            let low = data_with_crc.pop().unwrap();
+            let high = data_with_crc.pop().unwrap();
+            let received_crc = u16::from_be_bytes([high, low]);
+            if received_crc == calculate_crc(&data_with_crc) {
+                Ok(Some(data_with_crc))
             } else {
-                tracing::warn!(
-                    "Invalid CRC. Got: {:04X}, calculated: {:04X}. Frame discarded.",
-                    received_crc, calculated_crc
-                );
-                return self.decode(src);
+                self.decode(src)
             }
+        } else {
+            Ok(None)
         }
-        Ok(None)
     }
 }
 
 impl Encoder<Vec<u8>> for SatelCodec {
     type Error = io::Error;
-
     fn encode(&mut self, item: Vec<u8>, dst: &mut BytesMut) -> Result<(), Self::Error> {
         dst.extend_from_slice(&[0xFE, 0xFE]);
-
         for &byte in &item {
-            if byte == 0xFE {
-                dst.extend_from_slice(&[0xFE, 0xF0]);
-            } else {
-                dst.extend_from_slice(&[byte]);
-            }
+            if byte == 0xFE { dst.extend_from_slice(&[0xFE, 0xF0]); } else { dst.extend_from_slice(&[byte]); }
         }
-
         let crc = calculate_crc(&item);
-        let crc_bytes = crc.to_be_bytes();
-
-        for &byte in &crc_bytes {
-            if byte == 0xFE {
-                dst.extend_from_slice(&[0xFE, 0xF0]);
-            } else {
-                dst.extend_from_slice(&[byte]);
-            }
+        for &byte in &crc.to_be_bytes() {
+            if byte == 0xFE { dst.extend_from_slice(&[0xFE, 0xF0]); } else { dst.extend_from_slice(&[byte]); }
         }
-
         dst.extend_from_slice(&[0xFE, 0x0D]);
-
         Ok(())
     }
 }

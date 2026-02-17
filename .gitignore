@@ -1,1 +1,15 @@
-target/
+# Rust
+/target/
+**/*.rs.bk
+cargo-expand-check.rs
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# System files
+.DS_Store
+Thumbs.db
+desktop.ini

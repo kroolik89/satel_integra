@@ -14,6 +14,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             port: 7094,
         },
         auto_reconnect: true,
+        auto_read_zones_violation: true,
+        auto_read_zones_tamper: true,
+        auto_read_zones_alarm: true,
+        auto_read_zones_tamper_alarm: true,
+        auto_read_zones_alarm_memory: true,
+        auto_read_zones_tamper_alarm_memory: true,
+        auto_read_zones_bypass: true,
+        auto_read_zones_no_violation_trouble: true,
+        auto_read_zones_long_violation_trouble: true,
         ..Default::default()
     };
 
@@ -22,80 +31,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     satel.connect().await?;
     println!("Połączono pomyślnie!");
 
-    // 2. Pobranie wersji dla potwierdzenia komunikacji
-    let version = satel.get_integra_version().await?;
-    println!("Model centrali: {}, Wersja: {}", version.model, version.firmware_version);
+    // 2. Pobranie wersji dla potwierdzenia komunikacji.
+    // Używamy bezpiecznej obsługi, bo system Auto-Reconnect może właśnie pracować w tle.
+    match satel.get_integra_version().await {
+        Ok(version) => println!("Model centrali: {}, Wersja: {}", version.model, version.firmware_version),
+        Err(e) => eprintln!("Początkowe pobranie wersji nieudane (Auto-Reconnect w toku?): {}", e),
+    }
 
-    // 3. Aktywacja automatycznego wysyłania ramek Push dla sabotaży (komenda 0x7F)
-    println!("Aktywacja automatycznego wysyłania ramek Push dla sabotaży (0x01)...");
-    let mut auto_push_data = vec![0x7F]; // Komenda 0x7F
-    
-    // Bajty dla ramek wysyłanych przy zmianie (6 bajtów)
-    // 0x01 dla sabotaży (bit 0 w pierwszym bajcie)
-    auto_push_data.push(0b1111_1111); // Aktywuj 0x01 (Zones Tamper)
-    auto_push_data.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00]); // Pozostałe 5 bajtów na 0x00
-
-    // Bajty dla ramek wysyłanych przy każdym odebraniu (6 bajtów - wszystkie na 0x00)
-    auto_push_data.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-
-    // Wysłanie komendy 0x7F
-    satel.exchange(auto_push_data, None, None).await?;
-    println!("Komenda 0x7F wysłana. Oczekiwanie na inicjalny stan sabotaży...");
-
-    // Poczekaj chwilę, aby centrala mogła wysłać inicjalny stan po aktywacji
+    // Poczekaj chwilę na ewentualną stabilizację i automatyczną konfigurację Push (0x7F)
     sleep(Duration::from_secs(1)).await;
 
-    // 4. Ręczne wywołanie odczytu sabotaży, aby wypełnić cache (może nie być konieczne, jeśli 0x7F od razu wysyła stan)
-    // Pozostawiamy dla pewności, w razie gdyby centrala nie wysyłała inicjalnego stanu od razu po 0x7F.
-    println!("Pobieranie początkowego stanu sabotaży...");
-    satel.get_zones_tamper().await?;
+    // 3. Ręczne wywołanie odczytu sabotaży (bezpieczna obsługa błędu)
+    println!("Próba pobrania początkowego stanu sabotaży...");
+    if let Err(e) = satel.get_zones_tamper().await {
+        eprintln!("Początkowe pobranie sabotaży nieudane: {}", e);
+    }
 
     // Mapa do przechowywania czasu ostatniej znanej aktualizacji dla każdego wejścia
-    let mut last_update_times: HashMap<u16, DateTime<Local>> = HashMap::new();
+    // Klucz: zone_id, Wartość: (violation_at, tamper_at)
+    let mut last_update_times: HashMap<u16, (DateTime<Local>, DateTime<Local>)> = HashMap::new();
 
     // Inicjalizacja mapy czasów
     for i in 1..=256 {
         if let Ok(Some(status)) = satel.get_cached_zone_status(i) {
-            last_update_times.insert(i, status.tamper_at);
+            last_update_times.insert(i, (status.violation_at, status.tamper_at));
         }
     }
 
-    println!("Rozpoczęto monitorowanie zmian sabotaży (pętla nieskończona)...");
-    println!("Wskazówka: Centrala powinna teraz automatycznie wysyłać zmiany sabotaży, a ja będę co 2 sekundy odpytywał o wersję.");
+    println!("Rozpoczęto monitorowanie zmian naruszeń i sabotaży (pętla nieskończona)...");
+    println!("Wskazówka: Centrala powinna teraz automatycznie wysyłać zmiany. Biblioteka automatycznie podtrzymuje połączenie w tle.");
 
-    let mut counter = 0;
-
-    // 5. Pętla monitorująca zmiany w cache i utrzymująca połączenie
+    // 4. Pętla monitorująca zmiany w cache
     loop {
-        counter += 1;
-
-        if counter % 20 == 0 { // Co 20 obiegów pętli (co ~2 sekundy)
-            match satel.get_integra_version().await {
-                Ok(version) => {
-                    println!("[{}] Odświeżono wersję centrali: {} (v{})", Local::now().format("%H:%M:%S%.3f"), version.model, version.firmware_version);
-                }
-                Err(e) => {
-                    eprintln!("[{}] Błąd podczas odczytu wersji: {}", Local::now().format("%H:%M:%S%.3f"), e);
-                }
-            }
-        }
-
         for i in 1..=256 {
             if let Ok(Some(status)) = satel.get_cached_zone_status(i) {
-                let last_time = last_update_times.get(&i).cloned().unwrap_or(status.tamper_at);
+                let (last_violation_time, last_tamper_time) = last_update_times
+                    .get(&i)
+                    .cloned()
+                    .unwrap_or((status.violation_at, status.tamper_at));
 
-                // Sprawdzamy czy czas aktualizacji się zmienił
-                if status.tamper_at > last_time {
+                // Sprawdzamy czy czas naruszenia się zmienił
+                if status.violation_at > last_violation_time {
                     println!(
-                        "[{}] ZMIANA na wejściu {}: Sabotaż = {} (Poprzednia aktualizacja: {})",
+                        "[{}] ZMIANA (Naruszenie) na wejściu {}: Stan = {} (Poprzednia: {})",
+                        status.violation_at.format("%H:%M:%S%.3f"),
+                        i,
+                        if status.violation_state { "NARUSZONE" } else { "OK" },
+                        last_violation_time.format("%H:%M:%S%.3f")
+                    );
+                }
+
+                // Sprawdzamy czy czas sabotażu się zmienił
+                if status.tamper_at > last_tamper_time {
+                    println!(
+                        "[{}] ZMIANA (Sabotaż) na wejściu {}: Stan = {} (Poprzednia: {})",
                         status.tamper_at.format("%H:%M:%S%.3f"),
                         i,
                         if status.tamper_state { "AKTYWNY" } else { "OK" },
-                        last_time.format("%H:%M:%S%.3f")
+                        last_tamper_time.format("%H:%M:%S%.3f")
                     );
-                    
+                }
+
+                if status.violation_at > last_violation_time || status.tamper_at > last_tamper_time {
                     // Aktualizujemy czas w naszej lokalnej mapie
-                    last_update_times.insert(i, status.tamper_at);
+                    last_update_times.insert(i, (status.violation_at, status.tamper_at));
                 }
             }
         }
