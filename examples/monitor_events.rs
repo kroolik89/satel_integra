@@ -63,17 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     satel.connect().await?;
     println!("Wywołano connect(). Czekanie na zdarzenia...");
 
-    // Przykład: Pobranie nazw (każde wywoła zdarzenie ...NameReceived)
-    println!("\nPobieranie nazw dla kilku wejść...");
-    for i in 1..=5 {
-        let _ = satel.get_zone_name(i).await;
-    }
 
-    // Przykład: Ręczne wymuszenie odczytu po 5 sekundach
-    // Jeśli stan w centrali różni się od tego w cache, zostaną wyemitowane zdarzenia.
-    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-    println!("\n--- Ręczne wymuszenie odczytu naruszeń (sprawdzenie spójności) ---");
-    let _ = satel.get_zones_violation().await;
 
     // Trzymamy program przy życiu, aby odbierać powiadomienia Push
     tokio::time::sleep(std::time::Duration::from_secs(3600)).await;

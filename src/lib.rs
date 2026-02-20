@@ -15,8 +15,8 @@ pub mod satel_integra_process;
 // Re-eksport najważniejszych publicznych typów dla wygody użytkownika biblioteki.
 pub use satel_integra::{SatelError, SatelIntegra};
 pub use satel_integra_data::{
-    Config, ConnectionConfig, ConnectionStatus, ConnectionTelemetry, ConnectionType, SatelCommand,
-    SatelState, SatelStateHandle, ZoneStatus, ZonesTamperData,
+    Config, ConnectionConfig, ConnectionState, ConnectionStatus, ConnectionTelemetry,
+    ConnectionType, SatelCommand, SatelState, SatelStateHandle, ZoneStatus, ZonesTamperData,
 };
 
 use std::sync::Once;

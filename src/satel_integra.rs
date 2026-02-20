@@ -1,5 +1,5 @@
 use crate::satel_integra_data::{
-    Config, ConnectionConfig, ConnectionStatus, ConnectionType, IntegraVersion, OutputName,
+    Config, ConnectionConfig, ConnectionState, ConnectionType, IntegraVersion, OutputName,
     PartitionName, SatelCommand, SatelEvent, SatelState, SatelStateHandle, ZoneName, ZoneStatus,
     ZoneTemperature,
 };
@@ -45,17 +45,25 @@ enum StateWorkerMessage {
     /// Ramka otrzymana z centrali (np. Push).
     Frame(Vec<u8>),
     /// Zmiana stanu połączenia.
-    Event(ConnectionEvent),
+    StatusChanged(ConnectionState),
 }
 
 /// Wewnętrzna wiadomość przesyłane między klientem a workerem.
 enum InternalMessage {
-    Exchange {
+    /// Standardowa wymiana danych (tylko w stanie Connected).
+    ExchangeStandard {
         data: Vec<u8>,
         write_timeout: Duration,
         read_timeout: Duration,
         created_at: Instant,
         max_queue_time: Duration,
+        response_tx: oneshot::Sender<Result<Vec<u8>, SatelError>>,
+    },
+    /// Priorytetowa wymiana danych (dozwolona w Connecting, Handshake, Connected).
+    ExchangePriority {
+        data: Vec<u8>,
+        write_timeout: Duration,
+        read_timeout: Duration,
         response_tx: oneshot::Sender<Result<Vec<u8>, SatelError>>,
     },
     Connect {
@@ -73,7 +81,7 @@ pub struct SatelIntegra {
     tx: mpsc::Sender<InternalMessage>,
     state: SatelStateHandle,
     config: Config,
-    worker: Arc<Mutex<Option<SatelConnectionWorker>>>,
+    worker: Arc<Mutex<Option<SatelCommunicationWorker>>>,
     event_tx: broadcast::Sender<SatelEvent>,
 }
 
@@ -120,14 +128,12 @@ impl SatelIntegra {
         let (tx, rx) = mpsc::channel(100);
         let (event_tx, _) = broadcast::channel(1024);
 
-        let worker = SatelConnectionWorker {
+        let worker = SatelCommunicationWorker {
             config: config.clone(),
             state: state.clone(),
             rx,
             stream: None,
-            consecutive_failures: 0,
             state_worker_tx: None,
-            event_tx: event_tx.clone(),
         };
 
         Self {
@@ -160,7 +166,7 @@ impl SatelIntegra {
                 state_worker.run().await;
             });
 
-            // Uruchamiamy ConnectionWorkera (przejmuje self)
+            // Uruchamiamy CommunicationWorkera (przejmuje self)
             tokio::spawn(async move {
                 worker.run_with_initial_connect(connect_tx).await;
             });
@@ -212,24 +218,9 @@ impl SatelIntegra {
         write_timeout: Option<Duration>,
         read_timeout: Option<Duration>,
     ) -> Result<Vec<u8>, SatelError> {
-        {
-            let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
-            let status = state.telemetry.status;
-            let can_exchange = status == ConnectionStatus::Connected
-                || (status == ConnectionStatus::ConnectionLost && self.config.auto_reconnect);
-
-            if !can_exchange {
-                return Err(match status {
-                    ConnectionStatus::Disconnected => SatelError::NotConnected,
-                    ConnectionStatus::ConnectionLost => SatelError::ConnectionLost,
-                    ConnectionStatus::Connected => unreachable!(),
-                });
-            }
-        }
-
         let (response_tx, response_rx) = oneshot::channel();
 
-        let msg = InternalMessage::Exchange {
+        let msg = InternalMessage::ExchangeStandard {
             data,
             write_timeout: write_timeout
                 .unwrap_or(Duration::from_millis(self.config.write_timeout_ms)),
@@ -237,6 +228,32 @@ impl SatelIntegra {
                 .unwrap_or(Duration::from_millis(self.config.read_timeout_ms)),
             created_at: Instant::now(),
             max_queue_time: Duration::from_millis(self.config.buffer_timeout_ms),
+            response_tx,
+        };
+
+        self.tx
+            .send(msg)
+            .await
+            .map_err(|_| SatelError::WorkerDropped)?;
+
+        response_rx.await.map_err(|_| SatelError::WorkerDropped)?
+    }
+
+    /// Wykonuje operację wymiany danych z priorytetem (np. podczas handshake).
+    pub async fn exchange_priority(
+        &self,
+        data: Vec<u8>,
+        write_timeout: Option<Duration>,
+        read_timeout: Option<Duration>,
+    ) -> Result<Vec<u8>, SatelError> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        let msg = InternalMessage::ExchangePriority {
+            data,
+            write_timeout: write_timeout
+                .unwrap_or(Duration::from_millis(self.config.write_timeout_ms)),
+            read_timeout: read_timeout
+                .unwrap_or(Duration::from_millis(self.config.read_timeout_ms)),
             response_tx,
         };
 
@@ -276,69 +293,6 @@ impl SatelIntegra {
     pub fn get_cached_version(&self) -> Result<Option<IntegraVersion>, SatelError> {
         let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
         Ok(state.integra_version.clone())
-    }
-
-    /// Konfiguruje automatyczne powiadomienia Push (komenda 0x7F).
-    async fn setup_auto_push(&self) -> Result<(), SatelError> {
-        tracing::info!("Konfigurowanie automatycznego odczytu Push (0x7F)...");
-
-        let mut auto_push_data = vec![SatelCommand::ListOfNewData.to_byte()];
-
-        // Bajty 1-6: Dane wysyłane przy zmianie (on change)
-        let mut mask_on_change = [0u8; 6];
-
-        // Bajt 1: bity dla komend 0x00-0x07
-        if self.config.auto_read_zones_violation {
-            mask_on_change[0] |= 1 << 0;
-        }
-        if self.config.auto_read_zones_tamper {
-            mask_on_change[0] |= 1 << 1;
-        }
-        if self.config.auto_read_zones_alarm {
-            mask_on_change[0] |= 1 << 2;
-        }
-        if self.config.auto_read_zones_tamper_alarm {
-            mask_on_change[0] |= 1 << 3;
-        }
-        if self.config.auto_read_zones_alarm_memory {
-            mask_on_change[0] |= 1 << 4;
-        }
-        if self.config.auto_read_zones_tamper_alarm_memory {
-            mask_on_change[0] |= 1 << 5;
-        }
-        if self.config.auto_read_zones_bypass {
-            mask_on_change[0] |= 1 << 6;
-        }
-        if self.config.auto_read_zones_no_violation_trouble {
-            mask_on_change[0] |= 1 << 7;
-        }
-
-        // Bajt 2: bity dla komend 0x08-0x0F
-        if self.config.auto_read_zones_long_violation_trouble {
-            mask_on_change[1] |= 1 << 0;
-        }
-        if self.config.auto_read_partitions_armed_suppressed {
-            mask_on_change[1] |= 1 << 1;
-        }
-
-        auto_push_data.extend_from_slice(&mask_on_change);
-
-        // Bajty 7-12: Dane wysyłane przy każdym odczycie (on every read) - ustawiamy na 0
-        auto_push_data.extend_from_slice(&[0x00; 6]);
-
-        let response = self.exchange(auto_push_data, None, None).await?;
-
-        // Centrala powinna odpowiedzieć ramką 0x7F (potwierdzenie maski)
-        if response.is_empty() || response[0] != SatelCommand::ListOfNewData.to_byte() {
-            tracing::error!(
-                "Nieoczekiwana odpowiedź na konfigurację Push: {:?}",
-                response.get(0)
-            );
-            return Err(SatelError::InvalidFrame);
-        }
-
-        tracing::info!("Konfiguracja Push zakończona pomyślnie");
-        Ok(())
     }
 
     /// Pobiera nazwę wejścia (zony) z centrali.
@@ -1080,7 +1034,6 @@ pub struct SatelAutoRequester {
 impl SatelAutoRequester {
     pub async fn run(&mut self) {
         tracing::info!("SatelAutoRequester uruchomiony");
-        let mut check_interval = tokio::time::interval(Duration::from_millis(200));
 
         loop {
             tokio::select! {
@@ -1090,45 +1043,13 @@ impl SatelAutoRequester {
                             StateWorkerMessage::Frame(frame) => {
                                 self.handle_auto_frame(&frame);
                             }
-                            StateWorkerMessage::Event(event) => {
-                                tracing::info!("SatelAutoRequester otrzymał zdarzenie: {:?}", event);
-                                match event {
-                                    ConnectionEvent::Connected => {
-                                        tracing::info!("Centrala połączona - inicjowanie monitorowania (0x7F) za 500ms...");
-                                        let integra = self.integra.clone();
-                                        tokio::spawn(async move {
-                                            tokio::time::sleep(Duration::from_millis(500)).await;
-                                            if let Err(e) = integra.setup_auto_push().await {
-                                                tracing::error!("Błąd podczas automatycznej konfiguracji Push (0x7F): {}", e);
-                                            }
-                                        });
-                                    }
-                                    ConnectionEvent::ConnectionLost => {
-                                        tracing::warn!("Połączenie utracone - oczekiwanie na wznowienie");
-                                    }
-                                    ConnectionEvent::Disconnected => {
-                                        tracing::info!("Połączenie zamknięte");
-                                    }
-                                }
+                            StateWorkerMessage::StatusChanged(state) => {
+                                tracing::info!("SatelAutoRequester: Zmiana stanu połączenia -> {:?}", state);
+                                let _ = self.integra.event_tx.send(SatelEvent::ConnectionChanged(state));
                             }
                         }
                     } else {
                         break;
-                    }
-                }
-                _ = check_interval.tick() => {
-                    let (status, last_send) = {
-                        let state = self.integra.state_handle();
-                        let s = state.read().unwrap();
-                        (s.telemetry.status, s.telemetry.last_send_at)
-                    };
-
-                    if status == ConnectionStatus::Connected && last_send.elapsed() >= Duration::from_secs(2) {
-                        // Automatyczne odpytanie o wersję dla podtrzymania połączenia,
-                        // jeśli przez ostatnie 2 sekundy nic nie zostało wysłane.
-                        if let Err(e) = self.integra.get_integra_version().await {
-                            tracing::debug!("SatelAutoRequester: Keep-alive pominięty: {}", e);
-                        }
                     }
                 }
             }
@@ -1216,20 +1137,18 @@ impl SatelAutoRequester {
 }
 
 /// Worker zarządzający fizycznym połączeniem w tle.
-pub struct SatelConnectionWorker {
+pub struct SatelCommunicationWorker {
     config: Config,
     state: SatelStateHandle,
     rx: mpsc::Receiver<InternalMessage>,
     stream: Option<FramedStream>,
-    consecutive_failures: usize,
     state_worker_tx: Option<mpsc::Sender<StateWorkerMessage>>,
-    event_tx: broadcast::Sender<SatelEvent>,
 }
 
-impl SatelConnectionWorker {
+impl SatelCommunicationWorker {
     /// Główna pętla workera z obsługą początkowego połączenia.
     async fn run_with_initial_connect(mut self, on_connect: oneshot::Sender<Result<(), SatelError>>) {
-        let result = self.connect_task().await;
+        let result = self.satel_connection_worker_connect().await;
         if let Err(e) = &result {
             tracing::error!("Początkowe połączenie nieudane: {:?}", e);
         }
@@ -1239,52 +1158,66 @@ impl SatelConnectionWorker {
 
     /// Główna pętla workera.
     pub async fn run(mut self) {
+        let mut ping_interval = tokio::time::interval(Duration::from_secs(1));
+
         loop {
-            let (is_connected, should_reconnect) = {
-                let is_connected = self.stream.is_some();
-                let should_reconnect = {
-                    let s = self.state.read().unwrap();
-                    s.telemetry.status == ConnectionStatus::ConnectionLost
-                        && self.config.auto_reconnect
-                };
-                (is_connected, should_reconnect)
-            };
+            let should_reconnect = self.config.auto_reconnect;
 
             tokio::select! {
-                // Aby uniknąć partial move, używamy &mut self.rx
                 maybe_msg = self.rx.recv() => {
                     if let Some(msg) = maybe_msg {
-                        let state = self.state.clone();
-                        let state_worker_tx = self.state_worker_tx.clone();
-                        self.handle_message_internal(msg, state, state_worker_tx).await;
+                        self.handle_message_internal(msg).await;
                     } else {
                         break;
                     }
                 }
 
-                res = Self::receive_push_internal(&mut self.stream, &self.state, &self.state_worker_tx) => {
+                res = Self::receive_push_internal(&mut self.stream, &self.state, &self.state_worker_tx), if self.stream.is_some() && self.get_current_state() == ConnectionState::Connected => {
                     if let Err(e) = res {
-                        tracing::error!("Błąd podczas odbierania danych Push: {:?}", e);
-                        self.set_connection_lost_internal().await;
+                        tracing::error!("Błąd podczas odbierania danych Push / Stream: {:?}", e);
+                        self.satel_connection_worker_connection_lost().await;
                     }
                 }
 
-                _ = sleep(Duration::from_millis(1000)), if !is_connected && should_reconnect => {
-                    let _ = self.ensure_connected().await;
+                _ = ping_interval.tick() => {
+                    let (current_state, last_send, last_event) = {
+                        let s = self.state.read().unwrap();
+                        (s.telemetry.status.state, s.telemetry.last_send_at, s.telemetry.status.last_event_at)
+                    };
+
+                    // 1. Watchdog dla Connecting / Handshake
+                    if (current_state == ConnectionState::Connecting || current_state == ConnectionState::Handshake)
+                        && last_event.elapsed() > Duration::from_secs(15) {
+                        tracing::warn!("Watchdog: Przekroczono czas łączenia/handshake (15s)");
+                        self.satel_connection_worker_connection_lost().await;
+                    }
+
+                    // 2. Ping (Keep-alive)
+                    if current_state == ConnectionState::Connected && last_send.elapsed() >= Duration::from_secs(2) {
+                        // Wysyłamy zapytanie o wersję dla podtrzymania połączenia
+                        let cmd = vec![SatelCommand::IntegraVersion.to_byte()];
+                        let _ = self.satel_connection_worker_exchange(cmd, 0x7E, Duration::from_millis(500), Duration::from_millis(500)).await;
+                    }
+
+                    // 3. Podtrzymywanie połączenia (Auto-reconnect)
+                    if should_reconnect && current_state == ConnectionState::ConnectionLost {
+                        if last_event.elapsed() >= self.calculate_backoff() {
+                            tracing::info!("Auto-reconnect: Podejmowanie próby połączenia...");
+                            if let Ok(s) = self.state.read() {
+                                s.telemetry.reconnect_count.fetch_add(1, Ordering::Relaxed);
+                            }
+                            let _ = self.satel_connection_worker_connect().await;
+                        }
+                    }
                 }
             }
         }
-        tracing::info!("SatelConnectionWorker zatrzymany");
+        tracing::info!("SatelCommunicationWorker zatrzymany");
     }
 
-    async fn handle_message_internal(
-        &mut self,
-        msg: InternalMessage,
-        state: SatelStateHandle,
-        state_worker_tx: Option<mpsc::Sender<StateWorkerMessage>>,
-    ) {
+    async fn handle_message_internal(&mut self, msg: InternalMessage) {
         match msg {
-            InternalMessage::Exchange {
+            InternalMessage::ExchangeStandard {
                 data,
                 write_timeout,
                 read_timeout,
@@ -1292,53 +1225,65 @@ impl SatelConnectionWorker {
                 max_queue_time,
                 response_tx,
             } => {
+                let current_state = self.get_current_state();
+                if current_state != ConnectionState::Connected {
+                    let _ = response_tx.send(Err(SatelError::NotConnected));
+                    return;
+                }
                 if created_at.elapsed() > max_queue_time {
                     let _ = response_tx.send(Err(SatelError::MessageExpired));
                     return;
                 }
-                if let Err(e) = self.ensure_connected().await {
-                    let _ = response_tx.send(Err(e));
+                let cmd_byte = data.first().cloned().unwrap_or(0);
+                let result = self
+                    .satel_connection_worker_exchange(data, cmd_byte, write_timeout, read_timeout)
+                    .await;
+                let _ = response_tx.send(result);
+            }
+            InternalMessage::ExchangePriority {
+                data,
+                write_timeout,
+                read_timeout,
+                response_tx,
+            } => {
+                let current_state = self.get_current_state();
+                if current_state == ConnectionState::Disconnected || current_state == ConnectionState::ConnectionLost {
+                    let _ = response_tx.send(Err(SatelError::NotConnected));
                     return;
                 }
                 let cmd_byte = data.first().cloned().unwrap_or(0);
                 let result = self
-                    .perform_exchange(data, cmd_byte, write_timeout, read_timeout)
+                    .satel_connection_worker_exchange(data, cmd_byte, write_timeout, read_timeout)
                     .await;
                 let _ = response_tx.send(result);
             }
             InternalMessage::Connect { response_tx } => {
-                let status = state.read().unwrap().telemetry.status;
-                if status == ConnectionStatus::Connected {
+                let state = self.get_current_state();
+                if state == ConnectionState::Connected {
                     let _ = response_tx.send(Err(SatelError::AlreadyConnected));
+                } else if state == ConnectionState::Connecting || state == ConnectionState::Handshake {
+                    let _ = response_tx.send(Err(match state {
+                        ConnectionState::Connecting => SatelError::AlreadyConnected, // W trakcie łączenia
+                        _ => SatelError::AlreadyConnected,
+                    }));
                 } else {
-                    let _ = response_tx.send(self.connect_task().await);
+                    let result = self.satel_connection_worker_connect().await;
+                    let _ = response_tx.send(result);
                 }
             }
             InternalMessage::Disconnect { response_tx } => {
-                let status = state.read().unwrap().telemetry.status;
-                if status == ConnectionStatus::Disconnected {
+                let state = self.get_current_state();
+                if state == ConnectionState::Disconnected {
                     let _ = response_tx.send(Err(SatelError::NotConnected));
                 } else {
-                    self.stream = None;
-                    {
-                        let mut s = state.write().unwrap();
-                        s.telemetry.status = ConnectionStatus::Disconnected;
-                    }
-                    Self::notify_state_worker(
-                        &state_worker_tx,
-                        StateWorkerMessage::Event(ConnectionEvent::Disconnected),
-                    )
-                    .await;
-                    let _ = self
-                        .event_tx
-                        .send(SatelEvent::ConnectionChanged(ConnectionStatus::Disconnected));
+                    self.satel_connection_worker_disconnect().await;
                     let _ = response_tx.send(Ok(()));
                 }
             }
         }
     }
 
-    async fn perform_exchange(
+    async fn satel_connection_worker_exchange(
         &mut self,
         data: Vec<u8>,
         expected_cmd: u8,
@@ -1357,7 +1302,7 @@ impl SatelConnectionWorker {
                 s.telemetry.last_send_at = Instant::now();
             }
             Ok(Err(e)) => {
-                self.set_connection_lost_internal().await;
+                self.satel_connection_worker_connection_lost().await;
                 return Err(SatelError::Io(e));
             }
             Err(_) => return Err(SatelError::Timeout),
@@ -1390,11 +1335,11 @@ impl SatelConnectionWorker {
                     }
                 }
                 Ok(Some(Err(e))) => {
-                    self.set_connection_lost_internal().await;
+                    self.satel_connection_worker_connection_lost().await;
                     return Err(SatelError::Io(e));
                 }
                 Ok(None) => {
-                    self.set_connection_lost_internal().await;
+                    self.satel_connection_worker_connection_lost().await;
                     return Err(SatelError::StreamClosed);
                 }
                 Err(_) => break,
@@ -1403,27 +1348,161 @@ impl SatelConnectionWorker {
         Err(SatelError::Timeout)
     }
 
-    async fn set_connection_lost_internal(&mut self) {
-        self.stream = None;
-        let changed = {
+    // --- Helpery Stanu ---
+
+    fn get_current_state(&self) -> ConnectionState {
+        self.state.read().unwrap().telemetry.status.state
+    }
+
+    async fn set_state_connecting(&mut self) {
+        {
             let mut s = self.state.write().unwrap();
-            if s.telemetry.status == ConnectionStatus::Connected {
-                s.telemetry.status = ConnectionStatus::ConnectionLost;
-                true
-            } else {
-                false
+            s.telemetry.status.state = ConnectionState::Connecting;
+            s.telemetry.status.last_event_at = Instant::now();
+        }
+        Self::notify_state_worker(&self.state_worker_tx, StateWorkerMessage::StatusChanged(ConnectionState::Connecting)).await;
+    }
+
+    async fn set_state_handshake(&mut self) {
+        {
+            let mut s = self.state.write().unwrap();
+            s.telemetry.status.state = ConnectionState::Handshake;
+            s.telemetry.status.last_event_at = Instant::now();
+        }
+        Self::notify_state_worker(&self.state_worker_tx, StateWorkerMessage::StatusChanged(ConnectionState::Handshake)).await;
+    }
+
+    async fn set_state_connected(&mut self) {
+        {
+            let mut s = self.state.write().unwrap();
+            s.telemetry.status.state = ConnectionState::Connected;
+            s.telemetry.status.last_event_at = Instant::now();
+            s.telemetry.status.failed_attempts = 0;
+            s.telemetry.last_connected_at = Some(SystemTime::now());
+            s.connection_type = Some(match &self.config.connection {
+                ConnectionConfig::Tcp { host, port } => ConnectionType::Tcp(host.clone(), *port),
+                ConnectionConfig::Uart { path, .. } => ConnectionType::Uart(path.clone()),
+            });
+        }
+        Self::notify_state_worker(&self.state_worker_tx, StateWorkerMessage::StatusChanged(ConnectionState::Connected)).await;
+    }
+
+    async fn satel_connection_worker_connection_lost(&mut self) {
+        self.stream = None; // Kasuje strumień i bufor dekodera
+        {
+            let mut s = self.state.write().unwrap();
+            s.telemetry.status.state = ConnectionState::ConnectionLost;
+            s.telemetry.status.last_event_at = Instant::now();
+            s.telemetry.status.failed_attempts += 1;
+        }
+        Self::notify_state_worker(&self.state_worker_tx, StateWorkerMessage::StatusChanged(ConnectionState::ConnectionLost)).await;
+    }
+
+    async fn satel_connection_worker_disconnect(&mut self) {
+        self.stream = None;
+        {
+            let mut s = self.state.write().unwrap();
+            s.telemetry.status.state = ConnectionState::Disconnected;
+            s.telemetry.status.last_event_at = Instant::now();
+            s.telemetry.status.failed_attempts = 0;
+            s.telemetry.reset();
+        }
+        Self::notify_state_worker(&self.state_worker_tx, StateWorkerMessage::StatusChanged(ConnectionState::Disconnected)).await;
+    }
+
+    async fn satel_connection_worker_connect(&mut self) -> Result<(), SatelError> {
+        self.set_state_connecting().await;
+        
+        let conn_timeout = Duration::from_millis(self.config.read_timeout_ms);
+        tracing::info!("Podejmowanie próby połączenia fizycznego...");
+
+        let stream_result = timeout(conn_timeout, async {
+            match &self.config.connection {
+                ConnectionConfig::Tcp { host, port } => {
+                    let stream = TcpStream::connect((host.as_str(), *port))
+                        .await
+                        .map_err(SatelError::from)?;
+                    let boxed: Box<dyn AsyncReadWrite> = Box::new(stream);
+                    Ok::<Box<dyn AsyncReadWrite>, SatelError>(boxed)
+                }
+                ConnectionConfig::Uart { path, baud_rate } => {
+                    let stream = tokio_serial::new(path, *baud_rate)
+                        .open_native_async()
+                        .map_err(SatelError::from)?;
+                    let boxed: Box<dyn AsyncReadWrite> = Box::new(stream);
+                    Ok::<Box<dyn AsyncReadWrite>, SatelError>(boxed)
+                }
+            }
+        })
+        .await;
+
+        let stream = match stream_result {
+            Ok(Ok(s)) => s,
+            _ => {
+                self.satel_connection_worker_connection_lost().await;
+                return Err(SatelError::Timeout);
             }
         };
-        if changed {
-            Self::notify_state_worker(
-                &self.state_worker_tx,
-                StateWorkerMessage::Event(ConnectionEvent::ConnectionLost),
-            )
-            .await;
-            let _ = self
-                .event_tx
-                .send(SatelEvent::ConnectionChanged(ConnectionStatus::ConnectionLost));
+
+        self.stream = Some(Framed::new(stream, SatelCodec::default()));
+        self.set_state_handshake().await;
+
+        // Handshake
+        sleep(Duration::from_millis(200)).await;
+
+        // 1. Pytamy o wersję (używając priority exchange)
+        let cmd_version = vec![SatelCommand::IntegraVersion.to_byte()];
+        match self.satel_connection_worker_exchange(cmd_version, 0x7E, conn_timeout, conn_timeout).await {
+            Ok(response) => {
+                let version = process_integra_version(&response)?;
+                let mut s = self.state.write().unwrap();
+                s.integra_version = Some(version);
+            }
+            Err(e) => {
+                tracing::warn!("Handshake: błąd podczas pobierania wersji: {:?}", e);
+                self.satel_connection_worker_connection_lost().await;
+                return Err(e);
+            }
         }
+
+        // 2. Jeśli autoodczyt jest włączony, konfigurujemy Push
+        if self.config.is_auto_read_enabled() {
+            let mut auto_push_data = vec![SatelCommand::ListOfNewData.to_byte()];
+            let mut mask_on_change = [0u8; 6];
+            if self.config.auto_read_zones_violation { mask_on_change[0] |= 1 << 0; }
+            if self.config.auto_read_zones_tamper { mask_on_change[0] |= 1 << 1; }
+            if self.config.auto_read_zones_alarm { mask_on_change[0] |= 1 << 2; }
+            if self.config.auto_read_zones_tamper_alarm { mask_on_change[0] |= 1 << 3; }
+            if self.config.auto_read_zones_alarm_memory { mask_on_change[0] |= 1 << 4; }
+            if self.config.auto_read_zones_tamper_alarm_memory { mask_on_change[0] |= 1 << 5; }
+            if self.config.auto_read_zones_bypass { mask_on_change[0] |= 1 << 6; }
+            if self.config.auto_read_zones_no_violation_trouble { mask_on_change[0] |= 1 << 7; }
+            if self.config.auto_read_zones_long_violation_trouble { mask_on_change[1] |= 1 << 0; }
+            if self.config.auto_read_partitions_armed_suppressed { mask_on_change[1] |= 1 << 1; }
+            auto_push_data.extend_from_slice(&mask_on_change);
+            auto_push_data.extend_from_slice(&[0x00; 6]);
+
+            match self.satel_connection_worker_exchange(auto_push_data, 0x7F, conn_timeout, conn_timeout).await {
+                Ok(_) => { tracing::info!("Handshake: konfiguracja Push zakończona"); }
+                Err(e) => {
+                    tracing::warn!("Handshake: błąd podczas konfiguracji Push: {:?}", e);
+                    self.satel_connection_worker_connection_lost().await;
+                    return Err(e);
+                }
+            }
+        }
+
+        self.set_state_connected().await;
+        tracing::info!("Połączenie i Handshake zakończone pomyślnie");
+        Ok(())
+    }
+
+    fn calculate_backoff(&self) -> Duration {
+        let attempts = self.state.read().unwrap().telemetry.status.failed_attempts;
+        if attempts == 0 { return Duration::from_millis(500); }
+        
+        let ms = 500 * (2u64.pow(attempts.saturating_sub(1).min(7))); // 500, 1000, 2000, 4000, 8000, 16000, 32000, 64000
+        Duration::from_millis(ms.min(60000))
     }
 
     async fn notify_state_worker(
@@ -1458,99 +1537,6 @@ impl SatelConnectionWorker {
             Ok(None) => Err(SatelError::StreamClosed),
             Err(_) => Ok(()),
         }
-    }
-
-    async fn connect_task(&mut self) -> Result<(), SatelError> {
-        let conn_timeout = Duration::from_millis(self.config.read_timeout_ms);
-        tracing::info!("Podejmowanie próby połączenia...");
-
-        let stream_result = timeout(conn_timeout, async {
-            match &self.config.connection {
-                ConnectionConfig::Tcp { host, port } => {
-                    let stream = TcpStream::connect((host.as_str(), *port))
-                        .await
-                        .map_err(SatelError::from)?;
-                    let boxed: Box<dyn AsyncReadWrite> = Box::new(stream);
-                    Ok::<Box<dyn AsyncReadWrite>, SatelError>(boxed)
-                }
-                ConnectionConfig::Uart { path, baud_rate } => {
-                    let stream = tokio_serial::new(path, *baud_rate)
-                        .open_native_async()
-                        .map_err(SatelError::from)?;
-                    let boxed: Box<dyn AsyncReadWrite> = Box::new(stream);
-                    Ok::<Box<dyn AsyncReadWrite>, SatelError>(boxed)
-                }
-            }
-        })
-        .await;
-
-        let stream = match stream_result {
-            Ok(Ok(s)) => {
-                self.consecutive_failures = 0;
-                s
-            }
-            _ => {
-                self.consecutive_failures += 1;
-                let mut s = self.state.write().unwrap();
-                s.telemetry.status = if self.config.auto_reconnect {
-                    ConnectionStatus::ConnectionLost
-                } else {
-                    ConnectionStatus::Disconnected
-                };
-                return Err(SatelError::Timeout);
-            }
-        };
-
-        self.stream = Some(Framed::new(stream, SatelCodec::default()));
-        {
-            let mut s = self.state.write().unwrap();
-            s.telemetry.status = ConnectionStatus::Connected;
-            s.telemetry.last_connected_at = Some(SystemTime::now());
-            s.connection_type = Some(match &self.config.connection {
-                ConnectionConfig::Tcp { host, port } => ConnectionType::Tcp(host.clone(), *port),
-                ConnectionConfig::Uart { path, .. } => ConnectionType::Uart(path.clone()),
-            });
-        }
-        Self::notify_state_worker(
-            &self.state_worker_tx,
-            StateWorkerMessage::Event(ConnectionEvent::Connected),
-        )
-        .await;
-        let _ = self
-            .event_tx
-            .send(SatelEvent::ConnectionChanged(ConnectionStatus::Connected));
-        Ok(())
-    }
-
-    async fn ensure_connected(&mut self) -> Result<(), SatelError> {
-        if self.stream.is_some() {
-            return Ok(());
-        }
-        {
-            let s = self.state.read().unwrap();
-            if s.telemetry.status == ConnectionStatus::Disconnected {
-                return Err(SatelError::NotConnected);
-            }
-        }
-        if !self.config.auto_reconnect && self.consecutive_failures > 0 {
-            return Err(SatelError::NotConnected);
-        }
-        if self.consecutive_failures > 0 {
-            sleep(self.calculate_backoff()).await;
-        }
-        if let Ok(s) = self.state.read() {
-            s.telemetry.reconnect_count.fetch_add(1, Ordering::Relaxed);
-        }
-        self.connect_task().await
-    }
-
-    fn calculate_backoff(&self) -> Duration {
-        let ms = if self.consecutive_failures <= 10 {
-            500
-        } else {
-            500 + (self.consecutive_failures as u64 - 10) * 500
-        };
-        Duration::from_millis(ms.min(120000))
     }
 }
 

@@ -124,6 +124,22 @@ pub struct Config {
     pub auto_read_partitions_armed_suppressed: bool,
 }
 
+impl Config {
+    /// Sprawdza czy jakakolwiek opcja automatycznego odczytu jest włączona.
+    pub fn is_auto_read_enabled(&self) -> bool {
+        self.auto_read_zones_violation
+            || self.auto_read_zones_tamper
+            || self.auto_read_zones_alarm
+            || self.auto_read_zones_tamper_alarm
+            || self.auto_read_zones_alarm_memory
+            || self.auto_read_zones_tamper_alarm_memory
+            || self.auto_read_zones_bypass
+            || self.auto_read_zones_no_violation_trouble
+            || self.auto_read_zones_long_violation_trouble
+            || self.auto_read_partitions_armed_suppressed
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -236,13 +252,33 @@ fn default_buffer_timeout_ms() -> u64 {
 
 // --- Istniejące Struktury Danych (bez zmian) ---
 
-/// Status połączenia z centralą.
+/// Stany połączenia z centralą.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ConnectionStatus {
+pub enum ConnectionState {
     Connected,
     #[default]
     Disconnected,
     ConnectionLost,
+    Connecting,
+    Handshake,
+}
+
+/// Status połączenia zawierający stan i metadane.
+#[derive(Debug, Clone, Copy)]
+pub struct ConnectionStatus {
+    pub state: ConnectionState,
+    pub failed_attempts: u32,
+    pub last_event_at: Instant,
+}
+
+impl Default for ConnectionStatus {
+    fn default() -> Self {
+        Self {
+            state: ConnectionState::Disconnected,
+            failed_attempts: 0,
+            last_event_at: Instant::now(),
+        }
+    }
 }
 
 /// Typ używanego połączenia.
@@ -266,7 +302,7 @@ pub struct ConnectionTelemetry {
 impl Default for ConnectionTelemetry {
     fn default() -> Self {
         Self {
-            status: ConnectionStatus::Disconnected,
+            status: ConnectionStatus::default(),
             last_connected_at: None,
             last_send_at: Instant::now(),
             bytes_sent: AtomicUsize::new(0),
@@ -295,7 +331,7 @@ impl ConnectionTelemetry {
 #[derive(Debug, Clone)]
 pub enum SatelEvent {
     /// Zmiana stanu połączenia.
-    ConnectionChanged(ConnectionStatus),
+    ConnectionChanged(ConnectionState),
     /// Zmiana stanu naruszenia wejścia (0x00).
     ZoneViolation { id: u16, state: bool },
     /// Zmiana stanu sabotażu wejścia (0x01).
