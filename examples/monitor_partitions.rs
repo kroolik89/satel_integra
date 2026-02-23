@@ -14,8 +14,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             port: 7094,
         },
         auto_reconnect: true,
-        // Włączamy automatyczny odczyt uzbrojenia stref (0x09) przez Push (0x7F)
+        // Włączamy automatyczny odczyt różnych stanów stref przez Push (0x7F)
         auto_read_partitions_armed_suppressed: true,
+        auto_read_partitions_armed_really: true,
+        auto_read_partitions_alarm: true,
+        auto_read_partitions_alarm_memory: true,
+        auto_read_partitions_entry_time: true,
+        auto_read_partitions_exit_time: true,
         ..Default::default()
     };
 
@@ -35,12 +40,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = satel.get_partition_name(i as u16).await;
     }
 
-    // Ręczne wymuszenie odczytu uzbrojenia (0x09)
-    println!("Pobieranie stanu uzbrojenia stref (ręczne 0x09)...");
+    // Ręczne wymuszenie odczytu wszystkich stanów stref
+    println!("Inicjalizacja cache (pobieranie stanów 0x09, 0x0A, 0x13, 0x15)...");
     satel.get_partitions_armed_suppressed().await?;
+    satel.get_partitions_armed_really().await?;
+    satel.get_partitions_alarm().await?;
+    satel.get_partitions_alarm_memory().await?;
+    satel.get_partitions_times().await?;
 
-    // Mapa do śledzenia zmian czasu aktualizacji stref
-    let mut last_update_times: HashMap<u16, DateTime<Local>> = HashMap::new();
+    // Struktura do śledzenia zmian czasu aktualizacji różnych stanów stref
+    struct PartitionUpdateTimes {
+        armed_suppressed_at: DateTime<Local>,
+        armed_really_at: DateTime<Local>,
+        alarm_at: DateTime<Local>,
+        alarm_memory_at: DateTime<Local>,
+        entry_time_at: DateTime<Local>,
+        exit_time_gt_10s_at: DateTime<Local>,
+        exit_time_lt_10s_at: DateTime<Local>,
+    }
+
+    let mut last_update_times: HashMap<u16, PartitionUpdateTimes> = HashMap::new();
 
     // Wyświetlenie stanu początkowego i zainicjowanie czasów
     println!("\nStan początkowy stref:");
@@ -48,17 +67,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let state_handle = satel.state_handle();
         let state = state_handle.read().unwrap();
         for partition in &state.partitions {
+            let name = if partition.name.is_empty() { "Brak nazwy" } else { &partition.name };
+            
+            let armed_status = if partition.armed_really {
+                "UZBROJONA"
+            } else if partition.armed_suppressed {
+                "UZBROJONA (Tłumiona)"
+            } else {
+                "CZUWANIE WYŁ."
+            };
+
+            let alarm_status = if partition.alarm {
+                " !!! ALARM !!!"
+            } else if partition.alarm_memory {
+                " (Pamięć alarmu)"
+            } else {
+                ""
+            };
+
+            let time_status = if partition.entry_time {
+                " [CZAS NA WEJŚCIE]"
+            } else if partition.exit_time_lt_10s {
+                " [WYJŚCIE <10s]"
+            } else if partition.exit_time_gt_10s {
+                " [WYJŚCIE >10s]"
+            } else {
+                ""
+            };
+
             println!(
-                "Strefa {}: {} - Status: {}",
-                partition.id,
-                if partition.name.is_empty() { "Brak nazwy" } else { &partition.name },
-                if partition.armed_suppressed { "UZBROJONA (Suppressed)" } else { "CZUWANIE WYŁ." }
+                "Strefa {:2}: {:20} | {:18} | {}{}",
+                partition.id, name, armed_status, alarm_status, time_status
             );
-            last_update_times.insert(partition.id, partition.armed_suppressed_at);
+
+            last_update_times.insert(partition.id, PartitionUpdateTimes {
+                armed_suppressed_at: partition.armed_suppressed_at,
+                armed_really_at: partition.armed_really_at,
+                alarm_at: partition.alarm_at,
+                alarm_memory_at: partition.alarm_memory_at,
+                entry_time_at: partition.entry_time_at,
+                exit_time_gt_10s_at: partition.exit_time_gt_10s_at,
+                exit_time_lt_10s_at: partition.exit_time_lt_10s_at,
+            });
         }
     }
 
-    println!("\nRozpoczęto monitorowanie automatyczne (Push 0x09)...");
+    println!("\nRozpoczęto monitorowanie automatyczne (Push)...");
     println!("Wskazówka: Zmień stan uzbrojenia w strefie, aby zobaczyć powiadomienie Push.");
 
     // 3. Pętla sprawdzająca aktualizacje automatyczne w cache
@@ -68,19 +122,84 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let state = state_handle.read().unwrap();
             
             for partition in &state.partitions {
-                let last_time = last_update_times.get(&partition.id).cloned().unwrap();
+                let last = last_update_times.get_mut(&partition.id).unwrap();
+                let name = if partition.name.is_empty() { "Strefa" } else { &partition.name };
                 
-                if partition.armed_suppressed_at > last_time {
+                // 1. Zmiana uzbrojenia (suppressed)
+                if partition.armed_suppressed_at > last.armed_suppressed_at {
                     println!(
-                        "[{}] POWIADOMIENIE AUTOMATYCZNE (0x09) - Strefa {}: {} -> {}",
+                        "[{}] PUSH: Strefa {} ({}) - Stan Suppressed: {}",
                         partition.armed_suppressed_at.format("%H:%M:%S"),
-                        partition.id,
-                        if partition.name.is_empty() { "Strefa" } else { &partition.name },
-                        if partition.armed_suppressed { "UZBROJONA" } else { "WYŁĄCZONA" }
+                        partition.id, name,
+                        if partition.armed_suppressed { "TAK" } else { "NIE" }
                     );
-                    
-                    // Aktualizacja czasu
-                    last_update_times.insert(partition.id, partition.armed_suppressed_at);
+                    last.armed_suppressed_at = partition.armed_suppressed_at;
+                }
+
+                // 2. Zmiana uzbrojenia (really)
+                if partition.armed_really_at > last.armed_really_at {
+                    println!(
+                        "[{}] PUSH: Strefa {} ({}) - Stan Uzbrojenia: {}",
+                        partition.armed_really_at.format("%H:%M:%S"),
+                        partition.id, name,
+                        if partition.armed_really { "UZBROJONA" } else { "ROZBROJONA" }
+                    );
+                    last.armed_really_at = partition.armed_really_at;
+                }
+
+                // 3. Zmiana alarmu
+                if partition.alarm_at > last.alarm_at {
+                    println!(
+                        "[{}] PUSH: Strefa {} ({}) - !!! ALARM !!!: {}",
+                        partition.alarm_at.format("%H:%M:%S"),
+                        partition.id, name,
+                        if partition.alarm { "AKTYWNY" } else { "SKASOWANY" }
+                    );
+                    last.alarm_at = partition.alarm_at;
+                }
+
+                // 4. Zmiana pamięci alarmu
+                if partition.alarm_memory_at > last.alarm_memory_at {
+                    println!(
+                        "[{}] PUSH: Strefa {} ({}) - Pamięć alarmu: {}",
+                        partition.alarm_memory_at.format("%H:%M:%S"),
+                        partition.id, name,
+                        if partition.alarm_memory { "OBECNA" } else { "WYCZYSZCZONA" }
+                    );
+                    last.alarm_memory_at = partition.alarm_memory_at;
+                }
+
+                // 5. Zmiana czasu na wejście
+                if partition.entry_time_at > last.entry_time_at {
+                    println!(
+                        "[{}] PUSH: Strefa {} ({}) - Odliczanie NA WEJŚCIE: {}",
+                        partition.entry_time_at.format("%H:%M:%S"),
+                        partition.id, name,
+                        if partition.entry_time { "START" } else { "KONIEC" }
+                    );
+                    last.entry_time_at = partition.entry_time_at;
+                }
+
+                // 6. Zmiana czasu na wyjście > 10s
+                if partition.exit_time_gt_10s_at > last.exit_time_gt_10s_at {
+                    println!(
+                        "[{}] PUSH: Strefa {} ({}) - Odliczanie NA WYJŚCIE (>10s): {}",
+                        partition.exit_time_gt_10s_at.format("%H:%M:%S"),
+                        partition.id, name,
+                        if partition.exit_time_gt_10s { "START" } else { "KONIEC" }
+                    );
+                    last.exit_time_gt_10s_at = partition.exit_time_gt_10s_at;
+                }
+
+                // 7. Zmiana czasu na wyjście < 10s
+                if partition.exit_time_lt_10s_at > last.exit_time_lt_10s_at {
+                    println!(
+                        "[{}] PUSH: Strefa {} ({}) - Odliczanie NA WYJŚCIE (<10s): {}",
+                        partition.exit_time_lt_10s_at.format("%H:%M:%S"),
+                        partition.id, name,
+                        if partition.exit_time_lt_10s { "START" } else { "KONIEC" }
+                    );
+                    last.exit_time_lt_10s_at = partition.exit_time_lt_10s_at;
                 }
             }
         }

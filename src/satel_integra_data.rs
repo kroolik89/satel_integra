@@ -122,6 +122,26 @@ pub struct Config {
     /// Czy automatycznie odpytywać o stan uzbrojenia stref (suppressed) (0x09).
     #[serde(default = "default_auto_read")]
     pub auto_read_partitions_armed_suppressed: bool,
+
+    /// Czy automatycznie odpytywać o faktyczny stan uzbrojenia stref (0x0A).
+    #[serde(default = "default_auto_read")]
+    pub auto_read_partitions_armed_really: bool,
+
+    /// Czy automatycznie odpytywać o stan alarmów stref (0x13).
+    #[serde(default = "default_auto_read")]
+    pub auto_read_partitions_alarm: bool,
+
+    /// Czy automatycznie odpytywać o stan pamięci alarmów stref (0x15).
+    #[serde(default = "default_auto_read")]
+    pub auto_read_partitions_alarm_memory: bool,
+
+    /// Czy automatycznie odpytywać o czas na wejście (0x0E).
+    #[serde(default = "default_auto_read")]
+    pub auto_read_partitions_entry_time: bool,
+
+    /// Czy automatycznie odpytywać o czas na wyjście (0x0F, 0x10).
+    #[serde(default = "default_auto_read")]
+    pub auto_read_partitions_exit_time: bool,
 }
 
 impl Config {
@@ -137,6 +157,11 @@ impl Config {
             || self.auto_read_zones_no_violation_trouble
             || self.auto_read_zones_long_violation_trouble
             || self.auto_read_partitions_armed_suppressed
+            || self.auto_read_partitions_armed_really
+            || self.auto_read_partitions_alarm
+            || self.auto_read_partitions_alarm_memory
+            || self.auto_read_partitions_entry_time
+            || self.auto_read_partitions_exit_time
     }
 }
 
@@ -172,6 +197,11 @@ impl Default for Config {
             auto_read_zones_no_violation_trouble: default_auto_read(),
             auto_read_zones_long_violation_trouble: default_auto_read(),
             auto_read_partitions_armed_suppressed: default_auto_read(),
+            auto_read_partitions_armed_really: default_auto_read(),
+            auto_read_partitions_alarm: default_auto_read(),
+            auto_read_partitions_alarm_memory: default_auto_read(),
+            auto_read_partitions_entry_time: default_auto_read(),
+            auto_read_partitions_exit_time: default_auto_read(),
         }
     }
 }
@@ -352,6 +382,18 @@ pub enum SatelEvent {
     ZoneLongViolationTrouble { id: u16, state: bool },
     /// Zmiana stanu uzbrojenia strefy (0x09).
     PartitionArmed { id: u16, state: bool },
+    /// Zmiana faktycznego stanu uzbrojenia strefy (0x0A).
+    PartitionArmedReally { id: u16, state: bool },
+    /// Zmiana stanu alarmu w strefie (0x13).
+    PartitionAlarm { id: u16, state: bool },
+    /// Zmiana stanu pamięci alarmu w strefie (0x15).
+    PartitionAlarmMemory { id: u16, state: bool },
+    /// Zmiana stanu czasu na wejście (0x0E).
+    PartitionEntryTime { id: u16, state: bool },
+    /// Zmiana stanu czasu na wyjście > 10s (0x0F).
+    PartitionExitTimeGt10s { id: u16, state: bool },
+    /// Zmiana stanu czasu na wyjście < 10s (0x10).
+    PartitionExitTimeLt10s { id: u16, state: bool },
     /// Zmiana temperatury wejścia (0x7D).
     ZoneTemperatureChanged { id: u16, temperature: f32 },
     /// Odebrano nazwę wejścia (0xEE typ 1).
@@ -461,12 +503,15 @@ pub struct ZonesLongViolationTroubleData {
     pub read_at: DateTime<Local>,
 }
 
-/// Dane o uzbrojeniu stref odczytane z centrali (dla procesora).
+/// Dane o stanie stref odczytane z centrali (dla procesora).
 #[derive(Debug, Clone)]
-pub struct PartitionsArmedData {
+pub struct PartitionsData {
     pub states: Vec<bool>,
     pub read_at: DateTime<Local>,
 }
+
+// Zachowanie kompatybilności wstecznej aliasem
+pub type PartitionsArmedData = PartitionsData;
 
 /// Zagregowany status pojedynczego wejścia (dla użytkownika).
 #[derive(Debug, Clone)]
@@ -603,6 +648,18 @@ pub struct Partition {
     // Stany logiczne
     pub armed_suppressed: bool, // 0x09
     pub armed_suppressed_at: DateTime<Local>,
+    pub armed_really: bool, // 0x0A
+    pub armed_really_at: DateTime<Local>,
+    pub alarm: bool, // 0x13
+    pub alarm_at: DateTime<Local>,
+    pub alarm_memory: bool, // 0x15
+    pub alarm_memory_at: DateTime<Local>,
+    pub entry_time: bool, // 0x0E
+    pub entry_time_at: DateTime<Local>,
+    pub exit_time_gt_10s: bool, // 0x0F
+    pub exit_time_gt_10s_at: DateTime<Local>,
+    pub exit_time_lt_10s: bool, // 0x10
+    pub exit_time_lt_10s_at: DateTime<Local>,
 }
 
 impl Partition {
@@ -614,6 +671,18 @@ impl Partition {
             name_read_at: now,
             armed_suppressed: false,
             armed_suppressed_at: now,
+            armed_really: false,
+            armed_really_at: now,
+            alarm: false,
+            alarm_at: now,
+            alarm_memory: false,
+            alarm_memory_at: now,
+            entry_time: false,
+            entry_time_at: now,
+            exit_time_gt_10s: false,
+            exit_time_gt_10s_at: now,
+            exit_time_lt_10s: false,
+            exit_time_lt_10s_at: now,
         }
     }
 

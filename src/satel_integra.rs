@@ -5,7 +5,10 @@ use crate::satel_integra_data::{
 };
 use crate::satel_integra_process::{
     process_integra_version, process_output_name, process_partition_name,
-    process_partitions_armed_suppressed, process_zone_name, process_zone_temperature,
+    process_partitions_alarm, process_partitions_alarm_memory, process_partitions_armed_really,
+    process_partitions_armed_suppressed, process_partitions_entry_time,
+    process_partitions_exit_time_gt_10s, process_partitions_exit_time_lt_10s, process_zone_name,
+    process_zone_temperature,
     process_zones_alarm, process_zones_alarm_memory, process_zones_bypass,
     process_zones_long_violation_trouble, process_zones_no_violation_trouble, process_zones_tamper,
     process_zones_tamper_alarm, process_zones_tamper_alarm_memory, process_zones_violation,
@@ -118,6 +121,14 @@ pub enum SatelError {
     TempTooManyErrors,
     #[error("Stan wewnętrzny biblioteki został uszkodzony (poisoned lock)")]
     StatePoisoned,
+    #[error("Błędny kod użytkownika")]
+    InvalidUserCode,
+    #[error("Brak dostępu / Nieprawidłowe ID")]
+    NoAccess,
+    #[error("Nie można uzbroić (wymagane forsowanie)")]
+    CanNotArm,
+    #[error("Nieznany błąd centrali (0xEF): {0}")]
+    IntegraResultError(u8),
 }
 
 impl SatelIntegra {
@@ -565,6 +576,230 @@ impl SatelIntegra {
         Ok(())
     }
 
+    /// Formatuje kod użytkownika do 8 bajtów (BCD z paddingiem 0xFF).
+    fn format_user_code(code: &str) -> [u8; 8] {
+        let mut bcd_code = [0xFFu8; 8];
+        let mut current_byte = 0;
+        let mut half_byte = false;
+
+        for c in code.chars() {
+            if let Some(digit) = c.to_digit(10) {
+                if !half_byte {
+                    bcd_code[current_byte] = (digit as u8) << 4 | 0x0F;
+                    half_byte = true;
+                } else {
+                    bcd_code[current_byte] = (bcd_code[current_byte] & 0xF0) | (digit as u8);
+                    current_byte += 1;
+                    half_byte = false;
+                    if current_byte >= 8 {
+                        break;
+                    }
+                }
+            }
+        }
+        bcd_code
+    }
+
+    /// Przetwarza odpowiedź 0xEF z centrali.
+    fn handle_result_code(response: &[u8]) -> Result<(), SatelError> {
+        if response.is_empty() || response[0] != SatelCommand::ResultCode.to_byte() {
+            return Ok(());
+        }
+
+        let code = response.get(1).cloned().unwrap_or(0xFF);
+        match code {
+            0x00 => Ok(()),
+            0x01 => Err(SatelError::InvalidUserCode),
+            0x02 => Err(SatelError::NoAccess),
+            0x11 | 0x12 => Err(SatelError::CanNotArm),
+            0xFF => Ok(()), // Operacja w toku
+            _ => Err(SatelError::IntegraResultError(code)),
+        }
+    }
+
+    /// Rozwiązuje kod użytkownika (podany lub z konfiguracji).
+    fn resolve_code(&self, code: Option<&str>) -> Result<String, SatelError> {
+        if let Some(c) = code {
+            return Ok(c.to_string());
+        }
+        if let Some(ref c) = self.config.user_code {
+            return Ok(c.clone());
+        }
+        Err(SatelError::InvalidUserCode)
+    }
+
+    /// Uzbraja wybraną strefę w podanym trybie z opcją forsowania.
+    pub async fn arm(
+        &self,
+        partition_id: u16,
+        mode: u8,
+        force: bool,
+        code: Option<&str>,
+    ) -> Result<(), SatelError> {
+        if partition_id < 1 || partition_id > 32 {
+            return Err(SatelError::NoAccess);
+        }
+
+        let resolved_code = self.resolve_code(code)?;
+        tracing::info!(
+            "Uzbrajanie strefy {} w trybie {} (force: {})...",
+            partition_id,
+            mode,
+            force
+        );
+
+        let cmd_byte = if force {
+            match mode {
+                1 => SatelCommand::ForceArmMode1.to_byte(),
+                2 => SatelCommand::ForceArmMode2.to_byte(),
+                3 => SatelCommand::ForceArmMode3.to_byte(),
+                _ => SatelCommand::ForceArmMode0.to_byte(),
+            }
+        } else {
+            match mode {
+                1 => SatelCommand::ArmMode1.to_byte(),
+                2 => SatelCommand::ArmMode2.to_byte(),
+                3 => SatelCommand::ArmMode3.to_byte(),
+                _ => SatelCommand::ArmMode0.to_byte(),
+            }
+        };
+
+        let mut data = vec![cmd_byte];
+        data.extend_from_slice(&Self::format_user_code(&resolved_code));
+
+        // Maska stref (4 bajty)
+        let mut mask = [0u8; 4];
+        let idx = (partition_id - 1) as usize;
+        mask[idx / 8] |= 1 << (idx % 8);
+        data.extend_from_slice(&mask);
+
+        let response = self.exchange(data, None, None).await?;
+        Self::handle_result_code(&response)
+    }
+
+    /// Uzbraja strefę w trybie pełnym (Mode 0).
+    pub async fn arm_full(&self, partition_id: u16, code: Option<&str>) -> Result<(), SatelError> {
+        self.arm(partition_id, 0, false, code).await
+    }
+
+    /// Uzbraja strefę w trybie STAY (Mode 1).
+    pub async fn arm_stay(&self, partition_id: u16, code: Option<&str>) -> Result<(), SatelError> {
+        self.arm(partition_id, 1, false, code).await
+    }
+
+    /// Uzbraja strefę w trybie STAY bez opóźnienia (Mode 2).
+    pub async fn arm_stay_delay0(
+        &self,
+        partition_id: u16,
+        code: Option<&str>,
+    ) -> Result<(), SatelError> {
+        self.arm(partition_id, 2, false, code).await
+    }
+
+    /// Uzbraja strefę w trybie STAY bez czasu na wyjście (Mode 3).
+    pub async fn arm_stay_no_exit(
+        &self,
+        partition_id: u16,
+        code: Option<&str>,
+    ) -> Result<(), SatelError> {
+        self.arm(partition_id, 3, false, code).await
+    }
+
+    /// Uzbraja strefę w trybie pełnym z forsowaniem (Force Mode 0).
+    pub async fn force_arm_full(
+        &self,
+        partition_id: u16,
+        code: Option<&str>,
+    ) -> Result<(), SatelError> {
+        self.arm(partition_id, 0, true, code).await
+    }
+
+    /// Uzbraja strefę w trybie STAY z forsowaniem (Force Mode 1).
+    pub async fn force_arm_stay(
+        &self,
+        partition_id: u16,
+        code: Option<&str>,
+    ) -> Result<(), SatelError> {
+        self.arm(partition_id, 1, true, code).await
+    }
+
+    /// Rozbraja wybraną strefę.
+    pub async fn disarm(&self, partition_id: u16, code: Option<&str>) -> Result<(), SatelError> {
+        if partition_id < 1 || partition_id > 32 {
+            return Err(SatelError::NoAccess);
+        }
+
+        let resolved_code = self.resolve_code(code)?;
+        tracing::info!("Rozbrajanie strefy {}...", partition_id);
+
+        let mut data = vec![SatelCommand::Disarm.to_byte()];
+        data.extend_from_slice(&Self::format_user_code(&resolved_code));
+
+        // Maska stref (4 bajty)
+        let mut mask = [0u8; 4];
+        let idx = (partition_id - 1) as usize;
+        mask[idx / 8] |= 1 << (idx % 8);
+        data.extend_from_slice(&mask);
+
+        let response = self.exchange(data, None, None).await?;
+        Self::handle_result_code(&response)
+    }
+
+    /// Kasuje alarm w wybranej strefie.
+    pub async fn clear_alarm(&self, partition_id: u16, code: Option<&str>) -> Result<(), SatelError> {
+        if partition_id < 1 || partition_id > 32 {
+            return Err(SatelError::NoAccess);
+        }
+
+        let resolved_code = self.resolve_code(code)?;
+        tracing::info!("Kasowanie alarmu w strefie {}...", partition_id);
+
+        let mut data = vec![SatelCommand::ClearAlarm.to_byte()];
+        data.extend_from_slice(&Self::format_user_code(&resolved_code));
+
+        // Maska stref (4 bajty)
+        let mut mask = [0u8; 4];
+        let idx = (partition_id - 1) as usize;
+        mask[idx / 8] |= 1 << (idx % 8);
+        data.extend_from_slice(&mask);
+
+        let response = self.exchange(data, None, None).await?;
+        Self::handle_result_code(&response)
+    }
+
+    /// Steruje wyjściem (włącza/wyłącza).
+    pub async fn set_output(
+        &self,
+        output_id: u16,
+        state: bool,
+        code: Option<&str>,
+    ) -> Result<(), SatelError> {
+        if output_id < 1 || output_id > 256 {
+            return Err(SatelError::NoAccess);
+        }
+
+        let resolved_code = self.resolve_code(code)?;
+        tracing::info!("Ustawianie wyjścia {} na {}...", output_id, state);
+
+        let cmd_byte = if state {
+            SatelCommand::OutputsOn.to_byte()
+        } else {
+            SatelCommand::OutputsOff.to_byte()
+        };
+
+        let mut data = vec![cmd_byte];
+        data.extend_from_slice(&Self::format_user_code(&resolved_code));
+
+        // Maska wyjść (32 bajty dla 256 wyjść)
+        let mut mask = [0u8; 32];
+        let idx = (output_id - 1) as usize;
+        mask[idx / 8] |= 1 << (idx % 8);
+        data.extend_from_slice(&mask);
+
+        let response = self.exchange(data, None, None).await?;
+        Self::handle_result_code(&response)
+    }
+
     /// Pobiera temperaturę wejścia z cache.
     pub fn get_cached_zone_temperature(
         &self,
@@ -962,7 +1197,7 @@ impl SatelIntegra {
         let result = process_partitions_armed_suppressed(&response)?;
         self.update_partitions_armed_internal(result)?;
 
-        tracing::info!("Zaktualizowano stan uzbrojenia");
+        tracing::info!("Zaktualizowano stan uzbrojenia (suppressed)");
         Ok(())
     }
 
@@ -977,6 +1212,194 @@ impl SatelIntegra {
                     partition.armed_suppressed = new_state;
                     partition.armed_suppressed_at = result.read_at;
                     let _ = self.event_tx.send(SatelEvent::PartitionArmed {
+                        id: partition.id,
+                        state: new_state,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Pobiera faktyczny stan uzbrojenia stref z centrali i aktualizuje cache.
+    pub async fn get_partitions_armed_really(&self) -> Result<(), SatelError> {
+        tracing::info!("Pobieranie faktycznego stanu uzbrojenia stref...");
+
+        let cmd = vec![SatelCommand::ArmedPartitionsReally.to_byte()];
+        let response = self.exchange(cmd, None, None).await?;
+
+        let result = process_partitions_armed_really(&response)?;
+        self.update_partitions_armed_really_internal(result)?;
+
+        tracing::info!("Zaktualizowano faktyczny stan uzbrojenia");
+        Ok(())
+    }
+
+    fn update_partitions_armed_really_internal(
+        &self,
+        result: crate::satel_integra_data::PartitionsData,
+    ) -> Result<(), SatelError> {
+        let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+        for (i, &new_state) in result.states.iter().enumerate() {
+            if let Some(partition) = state.partitions.get_mut(i) {
+                if partition.armed_really != new_state {
+                    partition.armed_really = new_state;
+                    partition.armed_really_at = result.read_at;
+                    let _ = self.event_tx.send(SatelEvent::PartitionArmedReally {
+                        id: partition.id,
+                        state: new_state,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Pobiera stan alarmów stref z centrali i aktualizuje cache.
+    pub async fn get_partitions_alarm(&self) -> Result<(), SatelError> {
+        tracing::info!("Pobieranie stanu alarmów stref...");
+
+        let cmd = vec![SatelCommand::PartitionsAlarm.to_byte()];
+        let response = self.exchange(cmd, None, None).await?;
+
+        let result = process_partitions_alarm(&response)?;
+        self.update_partitions_alarm_internal(result)?;
+
+        tracing::info!("Zaktualizowano stan alarmów stref");
+        Ok(())
+    }
+
+    fn update_partitions_alarm_internal(
+        &self,
+        result: crate::satel_integra_data::PartitionsData,
+    ) -> Result<(), SatelError> {
+        let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+        for (i, &new_state) in result.states.iter().enumerate() {
+            if let Some(partition) = state.partitions.get_mut(i) {
+                if partition.alarm != new_state {
+                    partition.alarm = new_state;
+                    partition.alarm_at = result.read_at;
+                    let _ = self.event_tx.send(SatelEvent::PartitionAlarm {
+                        id: partition.id,
+                        state: new_state,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Pobiera stan pamięci alarmów stref z centrali i aktualizuje cache.
+    pub async fn get_partitions_alarm_memory(&self) -> Result<(), SatelError> {
+        tracing::info!("Pobieranie stanu pamięci alarmów stref...");
+
+        let cmd = vec![SatelCommand::PartitionsAlarmMemory.to_byte()];
+        let response = self.exchange(cmd, None, None).await?;
+
+        let result = process_partitions_alarm_memory(&response)?;
+        self.update_partitions_alarm_memory_internal(result)?;
+
+        tracing::info!("Zaktualizowano stan pamięci alarmów stref");
+        Ok(())
+    }
+
+    fn update_partitions_alarm_memory_internal(
+        &self,
+        result: crate::satel_integra_data::PartitionsData,
+    ) -> Result<(), SatelError> {
+        let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+        for (i, &new_state) in result.states.iter().enumerate() {
+            if let Some(partition) = state.partitions.get_mut(i) {
+                if partition.alarm_memory != new_state {
+                    partition.alarm_memory = new_state;
+                    partition.alarm_memory_at = result.read_at;
+                    let _ = self.event_tx.send(SatelEvent::PartitionAlarmMemory {
+                        id: partition.id,
+                        state: new_state,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Pobiera stany liczników czasu na wejście/wyjście stref z centrali i aktualizuje cache.
+    pub async fn get_partitions_times(&self) -> Result<(), SatelError> {
+        tracing::info!("Pobieranie stanów liczników czasu stref...");
+
+        // Entry time
+        let cmd = vec![SatelCommand::PartitionsEntryTime.to_byte()];
+        let response = self.exchange(cmd, None, None).await?;
+        let result = process_partitions_entry_time(&response)?;
+        self.update_partitions_entry_time_internal(result)?;
+
+        // Exit time > 10s
+        let cmd = vec![SatelCommand::PartitionsExitTimeMore10s.to_byte()];
+        let response = self.exchange(cmd, None, None).await?;
+        let result = process_partitions_exit_time_gt_10s(&response)?;
+        self.update_partitions_exit_time_gt_10s_internal(result)?;
+
+        // Exit time < 10s
+        let cmd = vec![SatelCommand::PartitionsExitTimeLess10s.to_byte()];
+        let response = self.exchange(cmd, None, None).await?;
+        let result = process_partitions_exit_time_lt_10s(&response)?;
+        self.update_partitions_exit_time_lt_10s_internal(result)?;
+
+        tracing::info!("Zaktualizowano stany liczników czasu stref");
+        Ok(())
+    }
+
+    fn update_partitions_entry_time_internal(
+        &self,
+        result: crate::satel_integra_data::PartitionsData,
+    ) -> Result<(), SatelError> {
+        let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+        for (i, &new_state) in result.states.iter().enumerate() {
+            if let Some(partition) = state.partitions.get_mut(i) {
+                if partition.entry_time != new_state {
+                    partition.entry_time = new_state;
+                    partition.entry_time_at = result.read_at;
+                    let _ = self.event_tx.send(SatelEvent::PartitionEntryTime {
+                        id: partition.id,
+                        state: new_state,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn update_partitions_exit_time_gt_10s_internal(
+        &self,
+        result: crate::satel_integra_data::PartitionsData,
+    ) -> Result<(), SatelError> {
+        let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+        for (i, &new_state) in result.states.iter().enumerate() {
+            if let Some(partition) = state.partitions.get_mut(i) {
+                if partition.exit_time_gt_10s != new_state {
+                    partition.exit_time_gt_10s = new_state;
+                    partition.exit_time_gt_10s_at = result.read_at;
+                    let _ = self.event_tx.send(SatelEvent::PartitionExitTimeGt10s {
+                        id: partition.id,
+                        state: new_state,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn update_partitions_exit_time_lt_10s_internal(
+        &self,
+        result: crate::satel_integra_data::PartitionsData,
+    ) -> Result<(), SatelError> {
+        let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+        for (i, &new_state) in result.states.iter().enumerate() {
+            if let Some(partition) = state.partitions.get_mut(i) {
+                if partition.exit_time_lt_10s != new_state {
+                    partition.exit_time_lt_10s = new_state;
+                    partition.exit_time_lt_10s_at = result.read_at;
+                    let _ = self.event_tx.send(SatelEvent::PartitionExitTimeLt10s {
                         id: partition.id,
                         state: new_state,
                     });
@@ -1126,6 +1549,36 @@ impl SatelAutoRequester {
             0x09 => {
                 if let Ok(d) = process_partitions_armed_suppressed(frame) {
                     let _ = self.integra.update_partitions_armed_internal(d);
+                }
+            }
+            0x0A => {
+                if let Ok(d) = process_partitions_armed_really(frame) {
+                    let _ = self.integra.update_partitions_armed_really_internal(d);
+                }
+            }
+            0x13 => {
+                if let Ok(d) = process_partitions_alarm(frame) {
+                    let _ = self.integra.update_partitions_alarm_internal(d);
+                }
+            }
+            0x0E => {
+                if let Ok(d) = process_partitions_entry_time(frame) {
+                    let _ = self.integra.update_partitions_entry_time_internal(d);
+                }
+            }
+            0x0F => {
+                if let Ok(d) = process_partitions_exit_time_gt_10s(frame) {
+                    let _ = self.integra.update_partitions_exit_time_gt_10s_internal(d);
+                }
+            }
+            0x10 => {
+                if let Ok(d) = process_partitions_exit_time_lt_10s(frame) {
+                    let _ = self.integra.update_partitions_exit_time_lt_10s_internal(d);
+                }
+            }
+            0x15 => {
+                if let Ok(d) = process_partitions_alarm_memory(frame) {
+                    let _ = self.integra.update_partitions_alarm_memory_internal(d);
                 }
             }
             0x17 => {
@@ -1479,6 +1932,14 @@ impl SatelCommunicationWorker {
             if self.config.auto_read_zones_no_violation_trouble { mask_on_change[0] |= 1 << 7; }
             if self.config.auto_read_zones_long_violation_trouble { mask_on_change[1] |= 1 << 0; }
             if self.config.auto_read_partitions_armed_suppressed { mask_on_change[1] |= 1 << 1; }
+            if self.config.auto_read_partitions_armed_really { mask_on_change[1] |= 1 << 2; }
+            if self.config.auto_read_partitions_alarm { mask_on_change[2] |= 1 << 3; }
+            if self.config.auto_read_partitions_alarm_memory { mask_on_change[2] |= 1 << 5; }
+            if self.config.auto_read_partitions_entry_time { mask_on_change[1] |= 1 << 6; } // 0x0E
+            if self.config.auto_read_partitions_exit_time {
+                mask_on_change[1] |= 1 << 7; // 0x0F
+                mask_on_change[2] |= 1 << 0; // 0x10
+            }
             auto_push_data.extend_from_slice(&mask_on_change);
             auto_push_data.extend_from_slice(&[0x00; 6]);
 
