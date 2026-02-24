@@ -1,10 +1,10 @@
 use crate::satel_integra_data::{
     Config, ConnectionConfig, ConnectionState, ConnectionType, IntegraVersion, OutputName,
-    PartitionName, SatelCommand, SatelEvent, SatelState, SatelStateHandle, ZoneName, ZoneStatus,
-    ZoneTemperature,
+    PartitionName, SatelCommand, SatelEvent, SatelResult, SatelState, SatelStateHandle, ZoneName,
+    ZoneStatus, ZoneTemperature,
 };
 use crate::satel_integra_process::{
-    process_integra_version, process_output_name, process_partition_name,
+    process_integra_version, process_output_name, process_outputs_state, process_partition_name,
     process_partitions_alarm, process_partitions_alarm_memory, process_partitions_armed_really,
     process_partitions_armed_suppressed, process_partitions_entry_time,
     process_partitions_exit_time_gt_10s, process_partitions_exit_time_lt_10s, process_zone_name,
@@ -602,18 +602,47 @@ impl SatelIntegra {
 
     /// Przetwarza odpowiedź 0xEF z centrali.
     fn handle_result_code(response: &[u8]) -> Result<(), SatelError> {
-        if response.is_empty() || response[0] != SatelCommand::ResultCode.to_byte() {
-            return Ok(());
+        tracing::info!("Odebrano ramkę odpowiedzi: {:02X?}", response);
+
+        if response.is_empty() {
+            tracing::error!("Pusta odpowiedź z centrali");
+            return Err(SatelError::InvalidFrame);
+        }
+
+        if response[0] != SatelCommand::ResultCode.to_byte() {
+            tracing::error!(
+                "Oczekiwano ramki wyniku (0xEF), otrzymano: {:02X?}",
+                response[0]
+            );
+            return Err(SatelError::InvalidFrame);
         }
 
         let code = response.get(1).cloned().unwrap_or(0xFF);
         match code {
-            0x00 => Ok(()),
-            0x01 => Err(SatelError::InvalidUserCode),
-            0x02 => Err(SatelError::NoAccess),
-            0x11 | 0x12 => Err(SatelError::CanNotArm),
-            0xFF => Ok(()), // Operacja w toku
-            _ => Err(SatelError::IntegraResultError(code)),
+            0x00 => {
+                tracing::debug!("Centrala: OK (0x00)");
+                Ok(())
+            }
+            0x01 => {
+                tracing::warn!("Centrala: Błędny kod użytkownika (0x01)");
+                Err(SatelError::InvalidUserCode)
+            }
+            0x02 => {
+                tracing::warn!("Centrala: Brak dostępu (0x02)");
+                Err(SatelError::NoAccess)
+            }
+            0x11 | 0x12 => {
+                tracing::warn!("Centrala: Nie można uzbroić (0x{:02X})", code);
+                Err(SatelError::CanNotArm)
+            }
+            0xFF => {
+                tracing::debug!("Centrala: Operacja w toku (0xFF)");
+                Ok(())
+            }
+            _ => {
+                tracing::error!("Centrala: Nieznany błąd (0x{:02X})", code);
+                Err(SatelError::IntegraResultError(code))
+            }
         }
     }
 
@@ -767,13 +796,8 @@ impl SatelIntegra {
         Self::handle_result_code(&response)
     }
 
-    /// Steruje wyjściem (włącza/wyłącza).
-    pub async fn set_output(
-        &self,
-        output_id: u16,
-        state: bool,
-        code: Option<&str>,
-    ) -> Result<(), SatelError> {
+    /// Steruje wyjściem (włącza/wyłącza). Metoda wewnętrzna.
+    async fn set_output(&self, output_id: u16, state: bool, code: Option<&str>) -> Result<(), SatelError> {
         if output_id < 1 || output_id > 256 {
             return Err(SatelError::NoAccess);
         }
@@ -788,6 +812,42 @@ impl SatelIntegra {
         };
 
         let mut data = vec![cmd_byte];
+        data.extend_from_slice(&Self::format_user_code(&resolved_code));
+
+        // Maska wyjść (32 bajty dla 256 wyjść)
+        let mut mask = [0u8; 32];
+        let idx = (output_id - 1) as usize;
+        mask[idx / 8] |= 1 << (idx % 8);
+        data.extend_from_slice(&mask);
+
+        let response = self.exchange(data, None, None).await?;
+        Self::handle_result_code(&response)
+    }
+
+    /// Włącza wybrane wyjście.
+    pub async fn set_output_on(&self, output_id: u16, code: Option<&str>) -> Result<(), SatelError> {
+        self.set_output(output_id, true, code).await
+    }
+
+    /// Wyłącza wybrane wyjście.
+    pub async fn set_output_off(&self, output_id: u16, code: Option<&str>) -> Result<(), SatelError> {
+        self.set_output(output_id, false, code).await
+    }
+
+    /// Przełącza stan wyjścia na przeciwny (toggle).
+    pub async fn set_output_toggle(
+        &self,
+        output_id: u16,
+        code: Option<&str>,
+    ) -> Result<(), SatelError> {
+        if output_id < 1 || output_id > 256 {
+            return Err(SatelError::NoAccess);
+        }
+
+        let resolved_code = self.resolve_code(code)?;
+        tracing::info!("Przełączanie stanu wyjścia {}...", output_id);
+
+        let mut data = vec![SatelCommand::OutputsSwitch.to_byte()];
         data.extend_from_slice(&Self::format_user_code(&resolved_code));
 
         // Maska wyjść (32 bajty dla 256 wyjść)
@@ -1427,6 +1487,41 @@ impl SatelIntegra {
         Ok(())
     }
 
+    /// Pobiera stan wszystkich wyjść z centrali i aktualizuje cache.
+    pub async fn get_outputs_state(&self) -> Result<(), SatelError> {
+        tracing::info!("Pobieranie stanu wszystkich wyjść...");
+
+        // Komenda 0x17, wysyłamy 2 bajty (0x17 + 0x00), aby wymusić odpowiedź 32-bajtową (256 wyjść)
+        let cmd = vec![SatelCommand::OutputsState.to_byte(), 0x00];
+        let response = self.exchange(cmd, None, None).await?;
+
+        let result = process_outputs_state(&response)?;
+        self.update_outputs_state_internal(result)?;
+
+        tracing::info!("Zaktualizowano stan wyjść");
+        Ok(())
+    }
+
+    fn update_outputs_state_internal(
+        &self,
+        result: crate::satel_integra_data::OutputsStateData,
+    ) -> Result<(), SatelError> {
+        let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+        for (i, &new_state) in result.states.iter().enumerate() {
+            if let Some(output) = state.outputs.get_mut(i) {
+                if output.state != new_state {
+                    output.state = new_state;
+                    output.state_read_at = result.read_at;
+                    let _ = self.event_tx.send(SatelEvent::OutputChanged {
+                        id: output.id,
+                        state: new_state,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn update_zones_long_violation_trouble_internal(
         &self,
         result: crate::satel_integra_data::ZonesLongViolationTroubleData,
@@ -1582,7 +1677,16 @@ impl SatelAutoRequester {
                 }
             }
             0x17 => {
-                // To be implemented later if needed
+                if let Ok(d) = process_outputs_state(frame) {
+                    let _ = self.integra.update_outputs_state_internal(d);
+                }
+            }
+            0xEF => {
+                let code = frame.get(1).cloned().unwrap_or(0xFF);
+                if code != 0xFF {
+                    let result = SatelResult::from_byte(code);
+                    let _ = self.integra.event_tx.send(SatelEvent::PanelMessage(result));
+                }
             }
             _ => {}
         }
@@ -1777,14 +1881,23 @@ impl SatelCommunicationWorker {
                     if frame.is_empty() {
                         continue;
                     }
-                    if frame[0] == expected_cmd || frame[0] == 0xEF {
-                        return Ok(frame);
-                    } else {
+
+                    // Powiadamiamy AutoRequestera o ramkach Push oraz o kodach wyników (0xEF).
+                    // Pomijamy kod 0xFF (zaakceptowano), ponieważ jest to tylko techniczne potwierdzenie
+                    // bieżącej komendy i nie powinno być traktowane jako asynchroniczne powiadomienie.
+                    let is_result_code = frame[0] == 0xEF;
+                    let is_accepted = is_result_code && frame.get(1) == Some(&0xFF);
+
+                    if (frame[0] != expected_cmd || is_result_code) && !is_accepted {
                         Self::notify_state_worker(
                             &self.state_worker_tx,
-                            StateWorkerMessage::Frame(frame),
+                            StateWorkerMessage::Frame(frame.clone()),
                         )
                         .await;
+                    }
+
+                    if frame[0] == expected_cmd || frame[0] == 0xEF {
+                        return Ok(frame);
                     }
                 }
                 Ok(Some(Err(e))) => {
@@ -1940,6 +2053,9 @@ impl SatelCommunicationWorker {
                 mask_on_change[1] |= 1 << 7; // 0x0F
                 mask_on_change[2] |= 1 << 0; // 0x10
             }
+            if self.config.auto_read_outputs_state {
+                mask_on_change[2] |= 1 << 7; // 0x17
+            }
             auto_push_data.extend_from_slice(&mask_on_change);
             auto_push_data.extend_from_slice(&[0x00; 6]);
 
@@ -1991,7 +2107,12 @@ impl SatelCommunicationWorker {
                         .bytes_received
                         .fetch_add(frame.len(), Ordering::Relaxed);
                 }
-                Self::notify_state_worker(state_worker_tx, StateWorkerMessage::Frame(frame)).await;
+
+                // Nie przekazujemy dalej technicznego potwierdzenia [EF, FF] jako Push
+                let is_accepted = frame[0] == 0xEF && frame.get(1) == Some(&0xFF);
+                if !is_accepted {
+                    Self::notify_state_worker(state_worker_tx, StateWorkerMessage::Frame(frame)).await;
+                }
                 Ok(())
             }
             Ok(Some(Err(e))) => Err(SatelError::Io(e)),

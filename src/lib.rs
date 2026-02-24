@@ -76,9 +76,9 @@ pub fn init_logging() {
         }
 
         use tracing::Level;
-        tracing_subscriber::fmt()
+        let _ = tracing_subscriber::fmt()
             .event_format(CustomFormatter)
             .with_max_level(Level::WARN)
-            .init();
+            .try_init();
     });
 }

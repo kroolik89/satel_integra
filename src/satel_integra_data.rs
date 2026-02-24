@@ -142,6 +142,10 @@ pub struct Config {
     /// Czy automatycznie odpytywać o czas na wyjście (0x0F, 0x10).
     #[serde(default = "default_auto_read")]
     pub auto_read_partitions_exit_time: bool,
+
+    /// Czy automatycznie odpytywać o stan wyjść (0x17).
+    #[serde(default = "default_auto_read")]
+    pub auto_read_outputs_state: bool,
 }
 
 impl Config {
@@ -162,6 +166,7 @@ impl Config {
             || self.auto_read_partitions_alarm_memory
             || self.auto_read_partitions_entry_time
             || self.auto_read_partitions_exit_time
+            || self.auto_read_outputs_state
     }
 }
 
@@ -202,6 +207,7 @@ impl Default for Config {
             auto_read_partitions_alarm_memory: default_auto_read(),
             auto_read_partitions_entry_time: default_auto_read(),
             auto_read_partitions_exit_time: default_auto_read(),
+            auto_read_outputs_state: default_auto_read(),
         }
     }
 }
@@ -394,6 +400,8 @@ pub enum SatelEvent {
     PartitionExitTimeGt10s { id: u16, state: bool },
     /// Zmiana stanu czasu na wyjście < 10s (0x10).
     PartitionExitTimeLt10s { id: u16, state: bool },
+    /// Zmiana stanu wyjścia (0x17).
+    OutputChanged { id: u16, state: bool },
     /// Zmiana temperatury wejścia (0x7D).
     ZoneTemperatureChanged { id: u16, temperature: f32 },
     /// Odebrano nazwę wejścia (0xEE typ 1).
@@ -402,6 +410,49 @@ pub enum SatelEvent {
     OutputNameReceived { id: u16, name: String },
     /// Odebrano nazwę strefy (0xEE typ 0).
     PartitionNameReceived { id: u16, name: String },
+    /// Otrzymano kod wyniku operacji z panelu (0xEF).
+    PanelMessage(SatelResult),
+}
+
+/// Reprezentuje czytelne kody wyników operacji zwracane przez centralę (0xEF).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SatelResult {
+    /// Operacja zakończona sukcesem (0x00).
+    Ok,
+    /// Błędny kod użytkownika (0x01).
+    InvalidUserCode,
+    /// Brak dostępu (0x02).
+    NoAccess,
+    /// Nie można uzbroić (0x11, 0x12).
+    CanNotArm,
+    /// Komenda przyjęta do przetwarzania (0xFF).
+    CommandAccepted,
+    /// Inny, nieznany błąd.
+    Other(u8),
+}
+
+impl SatelResult {
+    pub fn from_byte(b: u8) -> Self {
+        match b {
+            0x00 => Self::Ok,
+            0x01 => Self::InvalidUserCode,
+            0x02 => Self::NoAccess,
+            0x11 | 0x12 => Self::CanNotArm,
+            0xFF => Self::CommandAccepted,
+            _ => Self::Other(b),
+        }
+    }
+
+    pub fn to_description(&self) -> &str {
+        match self {
+            Self::Ok => "OK",
+            Self::InvalidUserCode => "Błędny kod użytkownika",
+            Self::NoAccess => "Brak dostępu",
+            Self::CanNotArm => "Nie można uzbroić",
+            Self::CommandAccepted => "Komenda przyjęta do przetwarzania",
+            Self::Other(_) => "Nieznany błąd lub status",
+        }
+    }
 }
 
 /// Informacje o wersji centrali Integra.
@@ -512,6 +563,13 @@ pub struct PartitionsData {
 
 // Zachowanie kompatybilności wstecznej aliasem
 pub type PartitionsArmedData = PartitionsData;
+
+/// Dane o stanie wyjść odczytane z centrali (dla procesora).
+#[derive(Debug, Clone)]
+pub struct OutputsStateData {
+    pub states: Vec<bool>,
+    pub read_at: DateTime<Local>,
+}
 
 /// Zagregowany status pojedynczego wejścia (dla użytkownika).
 #[derive(Debug, Clone)]
@@ -700,14 +758,19 @@ pub struct Output {
     pub id: u16,
     pub name: String,
     pub name_read_at: DateTime<Local>,
+    pub state: bool,
+    pub state_read_at: DateTime<Local>,
 }
 
 impl Output {
     pub fn new(id: u16) -> Self {
+        let now = Local::now();
         Self {
             id,
             name: String::new(),
-            name_read_at: Local::now(),
+            name_read_at: now,
+            state: false,
+            state_read_at: now,
         }
     }
 
@@ -762,7 +825,6 @@ pub type SatelStateHandle = Arc<RwLock<SatelState>>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SatelCommand {
-    // ... (reszta komend bez zmian)
     ZonesViolation = 0x00,
     ZonesTamper = 0x01,
     ZonesAlarm = 0x02,

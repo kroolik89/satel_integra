@@ -1,8 +1,8 @@
 use crate::satel_integra_data::{
-    IntegraVersion, PartitionsArmedData, PartitionsData, SatelName, ZonesAlarmData,
-    ZonesAlarmMemoryData, ZonesBypassData, ZonesLongViolationTroubleData,
-    ZonesNoViolationTroubleData, ZonesTamperAlarmData,
-    ZonesTamperAlarmMemoryData, ZonesTamperData, ZonesViolationData,
+    IntegraVersion, OutputsStateData, PartitionsArmedData, PartitionsData, SatelName,
+    ZonesAlarmData, ZonesAlarmMemoryData, ZonesBypassData, ZonesLongViolationTroubleData,
+    ZonesNoViolationTroubleData, ZonesTamperAlarmData, ZonesTamperAlarmMemoryData, ZonesTamperData,
+    ZonesViolationData,
 };
 use crate::satel_integra::SatelError;
 use chrono::Local;
@@ -648,6 +648,37 @@ pub fn process_partitions_alarm_memory(frame: &[u8]) -> Result<PartitionsData, S
     }
 
     Ok(PartitionsData {
+        states,
+        read_at: Local::now(),
+    })
+}
+
+/// Przetwarza całą ramkę odpowiedzi na komendę 0x17 (Outputs state).
+pub fn process_outputs_state(frame: &[u8]) -> Result<OutputsStateData, SatelError> {
+    if frame.is_empty() || frame[0] != 0x17 {
+        tracing::error!(
+            "Nieprawidłowy kod komendy w ramce stanu wyjść: {:02X?}",
+            frame.get(0)
+        );
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let data = &frame[1..];
+    // Satel zwraca 16 (128 wejść) lub 32 (256 wejść) bajty danych
+    if data.len() < 16 {
+        tracing::error!("Dane stanu wyjść zbyt krótkie: {} bajtów", data.len());
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let mut states = Vec::with_capacity(data.len() * 8);
+    for &byte in data {
+        for bit in 0..8 {
+            let state = (byte & (1 << bit)) != 0;
+            states.push(state);
+        }
+    }
+
+    Ok(OutputsStateData {
         states,
         read_at: Local::now(),
     })
