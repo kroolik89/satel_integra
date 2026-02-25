@@ -2078,21 +2078,60 @@ impl SatelCommunicationWorker {
 
     async fn satel_connection_worker_connect(&mut self) -> Result<(), SatelError> {
         self.set_state_connecting().await;
-        
+
         let conn_timeout = Duration::from_millis(self.config.read_timeout_ms);
+
+        // KROK 1: Połączenie fizyczne
+        let stream = match self.satel_connection_worker_connect__physical(conn_timeout).await {
+            Ok(s) => s,
+            Err(e) => {
+                self.satel_connection_worker_connection_lost().await;
+                return Err(e);
+            }
+        };
+
+        self.stream = Some(Framed::new(stream, SatelCodec::default()));
+        self.set_state_handshake().await;
+
+        // Krótka przerwa na stabilizację strumienia
+        sleep(Duration::from_millis(200)).await;
+
+        // KROK 2: Handshake (wersja centrali)
+        self.satel_connection_worker_connect__handshake(conn_timeout)
+            .await?;
+
+        // KROK 3: Konfiguracja autoodczytu (Push 0x7F)
+        if self.config.is_auto_read_enabled() {
+            self.satel_connection_worker_connect__auto_read(conn_timeout)
+                .await?;
+        }
+
+        self.set_state_connected().await;
+        tracing::info!("Połączenie i Handshake zakończone pomyślnie");
+        Ok(())
+    }
+
+    /// Pod-funkcja KROKU 1: Ustanowienie fizycznego połączenia TCP/UART.
+    async fn satel_connection_worker_connect__physical(
+        &mut self,
+        conn_timeout: Duration,
+    ) -> Result<Box<dyn AsyncReadWrite>, SatelError> {
         tracing::info!("Podejmowanie próby połączenia fizycznego...");
 
-        let stream_result = timeout(conn_timeout, async {
-            match &self.config.connection {
+        // Lokalna kopia konfiguracji, aby uniknąć przechwytywania &self w bloku async
+        let connection_config = self.config.connection.clone();
+
+        let stream_result = timeout(conn_timeout, async move {
+            match connection_config {
                 ConnectionConfig::Tcp { host, port } => {
-                    let stream = TcpStream::connect((host.as_str(), *port))
+                    let stream = TcpStream::connect((host.as_str(), port))
                         .await
                         .map_err(SatelError::from)?;
                     let boxed: Box<dyn AsyncReadWrite> = Box::new(stream);
                     Ok::<Box<dyn AsyncReadWrite>, SatelError>(boxed)
                 }
                 ConnectionConfig::Uart { path, baud_rate } => {
-                    let stream = tokio_serial::new(path, *baud_rate)
+                    let stream = tokio_serial::new(path, baud_rate)
                         .open_native_async()
                         .map_err(SatelError::from)?;
                     let boxed: Box<dyn AsyncReadWrite> = Box::new(stream);
@@ -2102,96 +2141,113 @@ impl SatelCommunicationWorker {
         })
         .await;
 
-        let stream = match stream_result {
-            Ok(Ok(s)) => s,
-            _ => {
-                self.satel_connection_worker_connection_lost().await;
-                return Err(SatelError::Timeout);
-            }
-        };
+        match stream_result {
+            Ok(Ok(s)) => Ok(s),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(SatelError::Timeout),
+        }
+    }
 
-        self.stream = Some(Framed::new(stream, SatelCodec::default()));
-        self.set_state_handshake().await;
-
-        // Handshake
-        sleep(Duration::from_millis(200)).await;
-
-        // 1. Pytamy o wersję (używając priority exchange)
+    /// Pod-funkcja KROKU 2: Logiczny handshake (pobranie wersji).
+    async fn satel_connection_worker_connect__handshake(
+        &mut self,
+        conn_timeout: Duration,
+    ) -> Result<(), SatelError> {
         let cmd_version = vec![SatelCommand::IntegraVersion.to_byte()];
-        match self.satel_connection_worker_exchange(cmd_version, 0x7E, conn_timeout, conn_timeout).await {
+        match self
+            .satel_connection_worker_exchange(cmd_version, 0x7E, conn_timeout, conn_timeout)
+            .await
+        {
             Ok(response) => {
                 let version = process_integra_version(&response)?;
                 let mut s = self.state.write().unwrap();
                 s.integra_version = Some(version);
+                Ok(())
             }
             Err(e) => {
                 tracing::warn!("Handshake: błąd podczas pobierania wersji: {:?}", e);
                 self.satel_connection_worker_connection_lost().await;
-                return Err(e);
+                Err(e)
             }
         }
+    }
 
-        // 2. Jeśli autoodczyt jest włączony, konfigurujemy Push
-        if self.config.is_auto_read_enabled() {
-            let mut auto_push_data = vec![SatelCommand::ListOfNewData.to_byte()];
-            let mut mask_on_change = [0u8; 12];
-            if self.config.auto_read_zones_violation { mask_on_change[0] |= 1 << 0; }
-            if self.config.auto_read_zones_tamper { mask_on_change[0] |= 1 << 1; }
-            if self.config.auto_read_zones_alarm { mask_on_change[0] |= 1 << 2; }
-            if self.config.auto_read_zones_tamper_alarm { mask_on_change[0] |= 1 << 3; }
-            if self.config.auto_read_zones_alarm_memory { mask_on_change[0] |= 1 << 4; }
-            if self.config.auto_read_zones_tamper_alarm_memory { mask_on_change[0] |= 1 << 5; }
-            if self.config.auto_read_zones_bypass { mask_on_change[0] |= 1 << 6; }
-            if self.config.auto_read_zones_no_violation_trouble { mask_on_change[0] |= 1 << 7; }
-            if self.config.auto_read_zones_long_violation_trouble { mask_on_change[1] |= 1 << 0; }
-            if self.config.auto_read_partitions_armed_suppressed { mask_on_change[1] |= 1 << 1; }
-            if self.config.auto_read_partitions_armed_really { mask_on_change[1] |= 1 << 2; }
-            if self.config.auto_read_partitions_alarm { mask_on_change[2] |= 1 << 3; }
-            if self.config.auto_read_partitions_alarm_memory { mask_on_change[2] |= 1 << 5; }
-            if self.config.auto_read_partitions_entry_time { mask_on_change[1] |= 1 << 6; } // 0x0E
-            if self.config.auto_read_partitions_exit_time {
-                mask_on_change[1] |= 1 << 7; // 0x0F
-                mask_on_change[2] |= 1 << 0; // 0x10
-            }
-            if self.config.auto_read_outputs_state {
-                mask_on_change[2] |= 1 << 7; // 0x17
-            }
-            if self.config.auto_read_system_troubles {
-                mask_on_change[3] |= 1 << 2; // 0x1A
-                mask_on_change[3] |= 1 << 3; // 0x1B
-                mask_on_change[3] |= 1 << 4; // 0x1C
-                mask_on_change[3] |= 1 << 5; // 0x1D
-                mask_on_change[3] |= 1 << 6; // 0x1E
-                mask_on_change[3] |= 1 << 7; // 0x1F
-                mask_on_change[5] |= 1 << 4; // 0x2C
-                mask_on_change[5] |= 1 << 5; // 0x2D
-                mask_on_change[6] |= 1 << 0; // 0x30
-            }
-            if self.config.auto_read_troubles_memory {
-                mask_on_change[4] |= 1 << 0; // 0x20
-                mask_on_change[4] |= 1 << 1; // 0x21
-                mask_on_change[4] |= 1 << 2; // 0x22
-                mask_on_change[4] |= 1 << 3; // 0x23
-                mask_on_change[4] |= 1 << 4; // 0x24
-                mask_on_change[5] |= 1 << 6; // 0x2E
-                mask_on_change[5] |= 1 << 7; // 0x2F
-                mask_on_change[6] |= 1 << 1; // 0x31
-            }
-            auto_push_data.extend_from_slice(&mask_on_change);
+    /// Pod-funkcja KROKU 3: Konfiguracja powiadomień Push (0x7F).
+    async fn satel_connection_worker_connect__auto_read(
+        &mut self,
+        conn_timeout: Duration,
+    ) -> Result<(), SatelError> {
+        let mask = Self::satel_connection_worker_connect__build_push_mask(&self.config);
+        let mut auto_push_data = vec![SatelCommand::ListOfNewData.to_byte()];
+        auto_push_data.extend_from_slice(&mask);
 
-            match self.satel_connection_worker_exchange(auto_push_data, 0x7F, conn_timeout, conn_timeout).await {
-                Ok(_) => { tracing::info!("Handshake: konfiguracja Push zakończona"); }
-                Err(e) => {
-                    tracing::warn!("Handshake: błąd podczas konfiguracji Push: {:?}", e);
-                    self.satel_connection_worker_connection_lost().await;
-                    return Err(e);
-                }
+        match self
+            .satel_connection_worker_exchange(auto_push_data, 0x7F, conn_timeout, conn_timeout)
+            .await
+        {
+            Ok(_) => {
+                tracing::info!("Handshake: konfiguracja Push zakończona");
+                Ok(())
+            }
+            Err(e) => {
+                tracing::warn!("Handshake: błąd podczas konfiguracji Push: {:?}", e);
+                self.satel_connection_worker_connection_lost().await;
+                Err(e)
             }
         }
+    }
 
-        self.set_state_connected().await;
-        tracing::info!("Połączenie i Handshake zakończone pomyślnie");
-        Ok(())
+    /// Pomocnicza funkcja budująca maskę Push. Zwraca Vec<u8> (obsługuje 12 lub 14 bajtów).
+    fn satel_connection_worker_connect__build_push_mask(config: &Config) -> Vec<u8> {
+        let mut mask = vec![0u8; 12]; // Domyślnie 12 bajtów, można rozszerzyć do 14
+        
+        if config.auto_read_zones_violation { mask[0] |= 1 << 0; }
+        if config.auto_read_zones_tamper { mask[0] |= 1 << 1; }
+        if config.auto_read_zones_alarm { mask[0] |= 1 << 2; }
+        if config.auto_read_zones_tamper_alarm { mask[0] |= 1 << 3; }
+        if config.auto_read_zones_alarm_memory { mask[0] |= 1 << 4; }
+        if config.auto_read_zones_tamper_alarm_memory { mask[0] |= 1 << 5; }
+        if config.auto_read_zones_bypass { mask[0] |= 1 << 6; }
+        if config.auto_read_zones_no_violation_trouble { mask[0] |= 1 << 7; }
+        if config.auto_read_zones_long_violation_trouble { mask[1] |= 1 << 0; }
+        if config.auto_read_partitions_armed_suppressed { mask[1] |= 1 << 1; }
+        if config.auto_read_partitions_armed_really { mask[1] |= 1 << 2; }
+        if config.auto_read_partitions_alarm { mask[2] |= 1 << 3; }
+        if config.auto_read_partitions_alarm_memory { mask[2] |= 1 << 5; }
+        if config.auto_read_partitions_entry_time { mask[1] |= 1 << 6; } // 0x0E
+        if config.auto_read_partitions_exit_time {
+            mask[1] |= 1 << 7; // 0x0F
+            mask[2] |= 1 << 0; // 0x10
+        }
+        if config.auto_read_outputs_state {
+            mask[2] |= 1 << 7; // 0x17
+        }
+        if config.auto_read_system_troubles {
+            mask[3] |= 1 << 2; // 0x1A
+            mask[3] |= 1 << 3; // 0x1B
+            mask[3] |= 1 << 4; // 0x1C
+            mask[3] |= 1 << 5; // 0x1D
+            mask[3] |= 1 << 6; // 0x1E
+            mask[3] |= 1 << 7; // 0x1F
+            mask[5] |= 1 << 4; // 0x2C
+            mask[5] |= 1 << 5; // 0x2D
+            mask[6] |= 1 << 0; // 0x30
+        }
+        if config.auto_read_troubles_memory {
+            mask[4] |= 1 << 0; // 0x20
+            mask[4] |= 1 << 1; // 0x21
+            mask[4] |= 1 << 2; // 0x22
+            mask[4] |= 1 << 3; // 0x23
+            mask[4] |= 1 << 4; // 0x24
+            mask[5] |= 1 << 6; // 0x2E
+            mask[5] |= 1 << 7; // 0x2F
+            mask[6] |= 1 << 1; // 0x31
+        }
+        
+        // Tutaj można dodać logikę rozszerzającą maskę do 14 bajtów, jeśli zajdzie taka potrzeba
+        // mask.extend_from_slice(&[0, 0]); 
+
+        mask
     }
 
     fn calculate_backoff(&self) -> Duration {
