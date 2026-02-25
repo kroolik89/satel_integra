@@ -94,6 +94,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         println!("\n[TEST] Scenariusz zakończony.");
+            println!("\n[TEST] >>> Wysyłam: WYŁĄCZ wyjście {}", 41);
+            match satel_clone.set_output_off(41, None).await {
+                Ok(_) => println!("[TEST] centrala ZAAKCEPTOWAŁA komendę wyłączenia wyjścia {}", 41),
+                Err(e) => println!("[TEST] centrala ODRZUCIŁA komendę wyłączenia wyjścia {}: {:?}", 41, e),
+            }
     });
 
     println!("\nOczekiwanie na zdarzenia (naciśnij Ctrl+C, aby przerwać)...");

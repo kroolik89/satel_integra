@@ -1,11 +1,11 @@
 use crate::satel_integra_data::{
-    IntegraVersion, OutputsStateData, PartitionsArmedData, PartitionsData, SatelName,
-    ZonesAlarmData, ZonesAlarmMemoryData, ZonesBypassData, ZonesLongViolationTroubleData,
-    ZonesNoViolationTroubleData, ZonesTamperAlarmData, ZonesTamperAlarmMemoryData, ZonesTamperData,
-    ZonesViolationData,
+    IntegraVersion, OutputsStateData, PartitionsArmedData, PartitionsData, SatelName, SystemStatus,
+    TroubleType, ZonesAlarmData, ZonesAlarmMemoryData, ZonesBypassData,
+    ZonesLongViolationTroubleData, ZonesNoViolationTroubleData, ZonesTamperAlarmData,
+    ZonesTamperAlarmMemoryData, ZonesTamperData, ZonesViolationData,
 };
 use crate::satel_integra::SatelError;
-use chrono::Local;
+use chrono::{Local, TimeZone};
 
 /// Przetwarza całą ramkę odpowiedzi na komendę 0x7E (Wersja centrali).
 pub fn process_integra_version(frame: &[u8]) -> Result<IntegraVersion, SatelError> {
@@ -682,4 +682,127 @@ pub fn process_outputs_state(frame: &[u8]) -> Result<OutputsStateData, SatelErro
         states,
         read_at: Local::now(),
     })
+}
+
+/// Przetwarza całą ramkę odpowiedzi na komendę 0x1A (RTC and status bits).
+pub fn process_rtc_and_status(frame: &[u8]) -> Result<SystemStatus, SatelError> {
+    if frame.is_empty() || frame[0] != 0x1A {
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let data = &frame[1..];
+    if data.len() < 7 {
+        return Err(SatelError::InvalidFrame);
+    }
+
+    // Bajty 0-5: BCD RTC (YYYY MM DD HH MM SS)
+    let year = 2000 + bcd_to_u8(data[0]) as i32;
+    let month = bcd_to_u8(data[1]) as u32;
+    let day = bcd_to_u8(data[2]) as u32;
+    let hour = bcd_to_u8(data[3]) as u32;
+    let min = bcd_to_u8(data[4]) as u32;
+    let sec = bcd_to_u8(data[5]) as u32;
+
+    let rtc = Local
+        .with_ymd_and_hms(year, month, day, hour, min, sec)
+        .single()
+        .unwrap_or_else(Local::now);
+
+    // Bajt 6: Status
+    let status_byte = data[6];
+    let service_mode = (status_byte & (1 << 7)) != 0;
+    let troubles_present = (status_byte & (1 << 6)) != 0;
+    let troubles_memory = (status_byte & (1 << 5)) != 0;
+
+    Ok(SystemStatus {
+        service_mode,
+        troubles_present,
+        troubles_memory,
+        rtc,
+    })
+}
+
+fn bcd_to_u8(bcd: u8) -> u8 {
+    ((bcd >> 4) * 10) + (bcd & 0x0F)
+}
+
+/// Przetwarza całą ramkę odpowiedzi na komendy awarii (0x1B-0x31).
+/// Zwraca wektor 40 bitów (5 bajtów danych).
+pub fn process_troubles(frame: &[u8]) -> Result<Vec<bool>, SatelError> {
+    if frame.is_empty() {
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let data = &frame[1..];
+    if data.len() < 5 {
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let mut states = Vec::with_capacity(40);
+    for &byte in data.iter().take(5) {
+        for bit in 0..8 {
+            states.push((byte & (1 << bit)) != 0);
+        }
+    }
+
+    Ok(states)
+}
+
+/// Mapuje globalny indeks bitu awarii (0-319) na nazwany typ `TroubleType`.
+pub fn map_trouble_bit(index: u16) -> TroubleType {
+    let part = (index / 40) as u8;
+    let bit = (index % 40) as u8;
+
+    match (part, bit) {
+        // Part 1 (0x1B)
+        (0, 0..=15) => TroubleType::OutTrouble(bit + 1),
+        (0, 16) => TroubleType::MainBoardAcLoss,
+        (0, 17) => TroubleType::MainBoardBatteryLow,
+        (0, 18) => TroubleType::MainBoardBatteryMissing,
+        (0, 19) => TroubleType::MainBoardOutOverload,
+        (0, 20) => TroubleType::TelephoneLineTrouble,
+        (0, 21) => TroubleType::RtcLoss,
+        (0, 22) => TroubleType::PrinterTrouble,
+        (0, 23) => TroubleType::MainBoardDataBusError,
+        (0, 24..=31) => TroubleType::ExpanderAcLoss(bit - 24 + 1),
+        (0, 32..=39) => TroubleType::ExpanderBatteryLow(bit - 32 + 1),
+
+        // Part 2 (0x1C)
+        (1, 0..=7) => TroubleType::ExpanderAcLoss(bit + 9),
+        (1, 8..=15) => TroubleType::ExpanderBatteryLow(bit - 8 + 9),
+        (1, 16..=23) => TroubleType::ExpanderAcLoss(bit - 16 + 17),
+        (1, 24..=31) => TroubleType::ExpanderBatteryLow(bit - 24 + 17),
+        (1, 32..=39) => TroubleType::ExpanderAcLoss(bit - 32 + 25),
+
+        // Part 3 (0x1D)
+        (2, 0..=7) => TroubleType::ExpanderBatteryLow(bit + 25),
+        (2, 8..=39) => TroubleType::ExpanderBatteryMissing(bit - 8 + 1),
+
+        // Part 4 (0x1E)
+        (3, 0..=31) => TroubleType::ExpanderOutOverload(bit + 1),
+        (3, 32..=39) => TroubleType::ExpanderDataBusError(bit - 32 + 1),
+
+        // Part 5 (0x1F)
+        (4, 0..=23) => TroubleType::ExpanderDataBusError(bit + 9),
+        (4, 24) => TroubleType::EthmMonitoringStation1Error,
+        (4, 25) => TroubleType::EthmMonitoringStation2Error,
+        (4, 26) => TroubleType::EthmDloadxConnectionError,
+        (4, 27) => TroubleType::EthmSatelServerConnectionError,
+        (4, 28) => TroubleType::IntGsmSignalLoss,
+        (4, 29) => TroubleType::GsmMonitoringStation1Error,
+        (4, 30) => TroubleType::GsmMonitoringStation2Error,
+        (4, 31) => TroubleType::ServiceAccessBlocked,
+        (4, 32..=39) => TroubleType::ZoneTrouble(bit as u16 - 32 + 1),
+
+        // Part 6 (0x2C)
+        (5, bit) => TroubleType::ZoneTrouble(bit as u16 + 9),
+
+        // Part 7 (0x2D)
+        (6, bit) => TroubleType::ZoneTrouble(bit as u16 + 49),
+
+        // Part 8 (0x30)
+        (7, bit) => TroubleType::ZoneTrouble(bit as u16 + 89),
+
+        _ => TroubleType::GenericTrouble { part, bit },
+    }
 }

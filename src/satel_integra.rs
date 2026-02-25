@@ -4,14 +4,15 @@ use crate::satel_integra_data::{
     ZoneStatus, ZoneTemperature,
 };
 use crate::satel_integra_process::{
-    process_integra_version, process_output_name, process_outputs_state, process_partition_name,
-    process_partitions_alarm, process_partitions_alarm_memory, process_partitions_armed_really,
-    process_partitions_armed_suppressed, process_partitions_entry_time,
-    process_partitions_exit_time_gt_10s, process_partitions_exit_time_lt_10s, process_zone_name,
-    process_zone_temperature,
-    process_zones_alarm, process_zones_alarm_memory, process_zones_bypass,
-    process_zones_long_violation_trouble, process_zones_no_violation_trouble, process_zones_tamper,
-    process_zones_tamper_alarm, process_zones_tamper_alarm_memory, process_zones_violation,
+    map_trouble_bit, process_integra_version, process_output_name, process_outputs_state,
+    process_partition_name, process_partitions_alarm, process_partitions_alarm_memory,
+    process_partitions_armed_really, process_partitions_armed_suppressed,
+    process_partitions_entry_time, process_partitions_exit_time_gt_10s,
+    process_partitions_exit_time_lt_10s, process_rtc_and_status, process_troubles,
+    process_zone_name, process_zone_temperature, process_zones_alarm, process_zones_alarm_memory,
+    process_zones_bypass, process_zones_long_violation_trouble, process_zones_no_violation_trouble,
+    process_zones_tamper, process_zones_tamper_alarm, process_zones_tamper_alarm_memory,
+    process_zones_violation,
 };
 use bytes::{Buf, BytesMut};
 use chrono::Local;
@@ -1491,7 +1492,7 @@ impl SatelIntegra {
     pub async fn get_outputs_state(&self) -> Result<(), SatelError> {
         tracing::info!("Pobieranie stanu wszystkich wyjść...");
 
-        // Komenda 0x17, wysyłamy 2 bajty (0x17 + 0x00), aby wymusić odpowiedź 32-bajtową (256 wyjść)
+        // Komenda 0x17, wysyłamy 2 bajty (0x17 + 0x00), aby wymusić odpowiedź 32-bajtową (256 wejść)
         let cmd = vec![SatelCommand::OutputsState.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
 
@@ -1539,6 +1540,93 @@ impl SatelIntegra {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Pobiera ogólny status systemu i aktualizuje cache.
+    pub async fn get_system_status(&self) -> Result<(), SatelError> {
+        tracing::info!("Pobieranie statusu systemu (RTC)...");
+
+        let cmd = vec![SatelCommand::RtcAndBasicStatusBits.to_byte()];
+        let response = self.exchange(cmd, None, None).await?;
+
+        let status = process_rtc_and_status(&response)?;
+        self.update_system_status_internal(status)?;
+
+        tracing::info!("Zaktualizowano status systemu");
+        Ok(())
+    }
+
+    fn update_system_status_internal(
+        &self,
+        status: crate::satel_integra_data::SystemStatus,
+    ) -> Result<(), SatelError> {
+        let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+        if state.system_status != Some(status) {
+            state.system_status = Some(status);
+            let _ = self.event_tx.send(SatelEvent::SystemStatusChanged(status));
+        }
+        Ok(())
+    }
+
+    /// Pobiera konkretną część awarii i aktualizuje cache, emitując zdarzenia dla zmian.
+    pub async fn get_system_troubles(&self, cmd: SatelCommand) -> Result<(), SatelError> {
+        tracing::info!("Pobieranie awarii systemu: {:02X?}", cmd);
+
+        let response = self.exchange(vec![cmd.to_byte()], None, None).await?;
+        let states = process_troubles(&response)?;
+        self.update_troubles_internal(cmd, states)?;
+
+        Ok(())
+    }
+
+    fn update_troubles_internal(&self, cmd: SatelCommand, states: Vec<bool>) -> Result<(), SatelError> {
+        let byte_cmd = cmd.to_byte();
+        let is_memory = (byte_cmd >= 0x20 && byte_cmd <= 0x24)
+            || (byte_cmd >= 0x2E && byte_cmd <= 0x2F)
+            || byte_cmd == 0x31;
+
+        let base_index = match byte_cmd {
+            0x1B => 0,
+            0x1C => 40,
+            0x1D => 80,
+            0x1E => 120,
+            0x1F => 160,
+            0x2C => 200,
+            0x2D => 240,
+            0x30 => 280,
+            // Memory
+            0x20 => 0,
+            0x21 => 40,
+            0x22 => 80,
+            0x23 => 120,
+            0x24 => 160,
+            0x2E => 200,
+            0x2F => 240,
+            0x31 => 280,
+            _ => return Ok(()), // Nieobsługiwana komenda
+        };
+
+        let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+        let target = if is_memory {
+            &mut state.troubles_memory
+        } else {
+            &mut state.troubles
+        };
+
+        for (i, &new_val) in states.iter().enumerate() {
+            let global_idx = base_index + i;
+            if global_idx < target.len() && target[global_idx] != new_val {
+                target[global_idx] = new_val;
+                let trouble_type = map_trouble_bit(global_idx as u16);
+                let _ = if is_memory {
+                    self.event_tx.send(SatelEvent::TroubleMemory(trouble_type, new_val))
+                } else {
+                    self.event_tx.send(SatelEvent::Trouble(trouble_type, new_val))
+                };
+            }
+        }
+
         Ok(())
     }
 }
@@ -1679,6 +1767,18 @@ impl SatelAutoRequester {
             0x17 => {
                 if let Ok(d) = process_outputs_state(frame) {
                     let _ = self.integra.update_outputs_state_internal(d);
+                }
+            }
+            0x1A => {
+                if let Ok(s) = process_rtc_and_status(frame) {
+                    let _ = self.integra.update_system_status_internal(s);
+                }
+            }
+            0x1B..=0x1F | 0x2C | 0x2D | 0x30 | 0x20..=0x24 | 0x2E | 0x2F | 0x31 => {
+                if let Some(cmd) = SatelCommand::from_byte(frame[0]) {
+                    if let Ok(states) = process_troubles(frame) {
+                        let _ = self.integra.update_troubles_internal(cmd, states);
+                    }
                 }
             }
             0xEF => {
@@ -2034,7 +2134,7 @@ impl SatelCommunicationWorker {
         // 2. Jeśli autoodczyt jest włączony, konfigurujemy Push
         if self.config.is_auto_read_enabled() {
             let mut auto_push_data = vec![SatelCommand::ListOfNewData.to_byte()];
-            let mut mask_on_change = [0u8; 6];
+            let mut mask_on_change = [0u8; 12];
             if self.config.auto_read_zones_violation { mask_on_change[0] |= 1 << 0; }
             if self.config.auto_read_zones_tamper { mask_on_change[0] |= 1 << 1; }
             if self.config.auto_read_zones_alarm { mask_on_change[0] |= 1 << 2; }
@@ -2056,8 +2156,28 @@ impl SatelCommunicationWorker {
             if self.config.auto_read_outputs_state {
                 mask_on_change[2] |= 1 << 7; // 0x17
             }
+            if self.config.auto_read_system_troubles {
+                mask_on_change[3] |= 1 << 2; // 0x1A
+                mask_on_change[3] |= 1 << 3; // 0x1B
+                mask_on_change[3] |= 1 << 4; // 0x1C
+                mask_on_change[3] |= 1 << 5; // 0x1D
+                mask_on_change[3] |= 1 << 6; // 0x1E
+                mask_on_change[3] |= 1 << 7; // 0x1F
+                mask_on_change[5] |= 1 << 4; // 0x2C
+                mask_on_change[5] |= 1 << 5; // 0x2D
+                mask_on_change[6] |= 1 << 0; // 0x30
+            }
+            if self.config.auto_read_troubles_memory {
+                mask_on_change[4] |= 1 << 0; // 0x20
+                mask_on_change[4] |= 1 << 1; // 0x21
+                mask_on_change[4] |= 1 << 2; // 0x22
+                mask_on_change[4] |= 1 << 3; // 0x23
+                mask_on_change[4] |= 1 << 4; // 0x24
+                mask_on_change[5] |= 1 << 6; // 0x2E
+                mask_on_change[5] |= 1 << 7; // 0x2F
+                mask_on_change[6] |= 1 << 1; // 0x31
+            }
             auto_push_data.extend_from_slice(&mask_on_change);
-            auto_push_data.extend_from_slice(&[0x00; 6]);
 
             match self.satel_connection_worker_exchange(auto_push_data, 0x7F, conn_timeout, conn_timeout).await {
                 Ok(_) => { tracing::info!("Handshake: konfiguracja Push zakończona"); }

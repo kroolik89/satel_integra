@@ -146,6 +146,14 @@ pub struct Config {
     /// Czy automatycznie odpytywać o stan wyjść (0x17).
     #[serde(default = "default_auto_read")]
     pub auto_read_outputs_state: bool,
+
+    /// Czy automatycznie odpytywać o stan awarii (0x1B-0x30).
+    #[serde(default = "default_auto_read")]
+    pub auto_read_system_troubles: bool,
+
+    /// Czy automatycznie odpytywać o pamięć awarii (0x20-0x31).
+    #[serde(default = "default_auto_read")]
+    pub auto_read_troubles_memory: bool,
 }
 
 impl Config {
@@ -167,6 +175,8 @@ impl Config {
             || self.auto_read_partitions_entry_time
             || self.auto_read_partitions_exit_time
             || self.auto_read_outputs_state
+            || self.auto_read_system_troubles
+            || self.auto_read_troubles_memory
     }
 }
 
@@ -208,6 +218,8 @@ impl Default for Config {
             auto_read_partitions_entry_time: default_auto_read(),
             auto_read_partitions_exit_time: default_auto_read(),
             auto_read_outputs_state: default_auto_read(),
+            auto_read_system_troubles: default_auto_read(),
+            auto_read_troubles_memory: default_auto_read(),
         }
     }
 }
@@ -412,6 +424,50 @@ pub enum SatelEvent {
     PartitionNameReceived { id: u16, name: String },
     /// Otrzymano kod wyniku operacji z panelu (0xEF).
     PanelMessage(SatelResult),
+    /// Zmiana stanu awarii systemu.
+    Trouble(TroubleType, bool),
+    /// Zmiana stanu pamięci awarii systemu.
+    TroubleMemory(TroubleType, bool),
+    /// Zmiana ogólnego statusu systemu (0x1A).
+    SystemStatusChanged(SystemStatus),
+}
+
+/// Typy awarii systemu Satel Integra.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TroubleType {
+    OutTrouble(u8),             // 1-256
+    MainBoardAcLoss,
+    MainBoardBatteryLow,
+    MainBoardBatteryMissing,
+    MainBoardOutOverload,
+    TelephoneLineTrouble,
+    RtcLoss,
+    PrinterTrouble,
+    MainBoardDataBusError,
+    ExpanderAcLoss(u8),         // 1-32
+    ExpanderBatteryLow(u8),      // 1-32
+    ExpanderBatteryMissing(u8),  // 1-32
+    ExpanderOutOverload(u8),    // 1-32
+    ExpanderDataBusError(u8),   // 1-32
+    EthmMonitoringStation1Error,
+    EthmMonitoringStation2Error,
+    EthmDloadxConnectionError,
+    EthmSatelServerConnectionError,
+    IntGsmSignalLoss,
+    GsmMonitoringStation1Error,
+    GsmMonitoringStation2Error,
+    ServiceAccessBlocked,
+    ZoneTrouble(u16),           // 1-256
+    GenericTrouble { part: u8, bit: u8 },
+}
+
+/// Ogólny status systemu (z ramki 0x1A).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SystemStatus {
+    pub service_mode: bool,
+    pub troubles_present: bool,
+    pub troubles_memory: bool,
+    pub rtc: DateTime<Local>,
 }
 
 /// Reprezentuje czytelne kody wyników operacji zwracane przez centralę (0xEF).
@@ -791,6 +847,9 @@ pub struct SatelState {
     pub zones: Vec<Zone>,           // Tablica 256 wejść
     pub outputs: Vec<Output>,       // Tablica 256 wyjść
     pub partitions: Vec<Partition>, // Tablica 32 stref
+    pub system_status: Option<SystemStatus>,
+    pub troubles: [bool; 320],      // 8 części po 40 bitów
+    pub troubles_memory: [bool; 320],
 }
 
 impl SatelState {
@@ -814,6 +873,9 @@ impl SatelState {
             zones,
             outputs,
             partitions,
+            system_status: None,
+            troubles: [false; 320],
+            troubles_memory: [false; 320],
         }
     }
 }
