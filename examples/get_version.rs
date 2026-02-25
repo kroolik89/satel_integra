@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Próba połączenia...");
     satel.connect().await?;
 
-    // 4. Pobranie wersji centrali (Nowa funkcja)
+    // 4. Pobranie wersji centrali
     match satel.get_integra_version().await {
         Ok(ver) => {
             println!("--- Dane Centrali ---");
@@ -33,12 +33,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Zapisane we FLASH: {}", ver.stored_in_flash);
             println!("Data odczytu: {}", ver.read_at);
         }
-        Err(e) => println!("Błąd podczas pobierania wersji: {:?}", e),
+        Err(e) => println!("Błąd podczas pobierania wersji centrali: {:?}", e),
     }
 
-    // 5. Sprawdzenie danych w cache
+    // 5. Pobranie wersji modułu ETHM/INT-RS
+    match satel.get_ethm_version().await {
+        Ok(ver) => {
+            println!("--- Dane Modułu ---");
+            println!("Wersja: {}", ver.version_raw);
+            println!("Możliwości: {:?}", ver.capabilities);
+            println!("Data odczytu: {}", ver.read_at);
+        }
+        Err(e) => println!("Błąd podczas pobierania wersji modułu: {:?}", e),
+    }
+
+    // 6. Pobranie statusu systemu
+    satel.get_system_status().await?;
+    {
+        let handle = satel.state_handle();
+        let state = handle.read().unwrap();
+        if let Some(status) = &state.system_status {
+            println!("--- Status Systemu ---");
+            println!("Czas RTC: {}", status.rtc);
+            println!("Tryb serwisowy: {}", status.service_mode);
+            println!("Awarie: {}", status.troubles_present);
+        }
+    }
+
+    // 7. Sprawdzenie danych w cache wersji
     if let Ok(Some(cached)) = satel.get_cached_version() {
-        println!("Dane z cache: {} v{}", cached.model, cached.firmware_version);
+        println!("Cache centrali: {} v{}", cached.model, cached.firmware_version);
     }
 
     // Pozwól na chwilę działania, aby zobaczyć logi z workera

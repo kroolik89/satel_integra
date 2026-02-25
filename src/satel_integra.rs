@@ -1,10 +1,11 @@
 use crate::satel_integra_data::{
     Config, ConnectionConfig, ConnectionState, ConnectionType, IntegraVersion, OutputName,
     PartitionName, SatelCommand, SatelEvent, SatelResult, SatelState, SatelStateHandle, ZoneName,
-    ZoneStatus, ZoneTemperature,
+    EthmVersion, ZoneStatus, ZoneTemperature,
 };
 use crate::satel_integra_process::{
-    map_trouble_bit, process_integra_version, process_output_name, process_outputs_state,
+    map_trouble_bit, process_ethm_version, process_integra_version, process_output_name,
+    process_outputs_state,
     process_partition_name, process_partitions_alarm, process_partitions_alarm_memory,
     process_partitions_armed_really, process_partitions_armed_suppressed,
     process_partitions_entry_time, process_partitions_exit_time_gt_10s,
@@ -50,6 +51,10 @@ enum StateWorkerMessage {
     Frame(Vec<u8>),
     /// Zmiana stanu połączenia.
     StatusChanged(ConnectionState),
+    /// Odebrano wersję centrali.
+    IntegraVersion(IntegraVersion),
+    /// Odebrano wersję modułu.
+    EthmVersion(EthmVersion),
 }
 
 /// Wewnętrzna wiadomość przesyłane między klientem a workerem.
@@ -285,18 +290,20 @@ impl SatelIntegra {
         let response = self.exchange(cmd, None, None).await?;
 
         let version = process_integra_version(&response)?;
+        self.update_integra_version_internal(version.clone())?;
 
-        {
-            let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
-            state.integra_version = Some(version.clone());
-        }
+        Ok(version)
+    }
 
-        tracing::info!(
-            "Pobrano wersję centrali: {} (v{}, język: {})",
-            version.model,
-            version.firmware_version,
-            version.language
-        );
+    /// Pobiera informacje o wersji modułu ETHM/INT-RS.
+    pub async fn get_ethm_version(&self) -> Result<EthmVersion, SatelError> {
+        tracing::info!("Pobieranie wersji modułu ETHM/INT-RS...");
+
+        let cmd = vec![SatelCommand::ModuleVersion.to_byte()];
+        let response = self.exchange(cmd, None, None).await?;
+
+        let version = process_ethm_version(&response)?;
+        self.update_ethm_version_internal(version.clone())?;
 
         Ok(version)
     }
@@ -553,6 +560,26 @@ impl SatelIntegra {
                 }
             }
         }
+    }
+
+    fn update_integra_version_internal(&self, version: IntegraVersion) -> Result<(), SatelError> {
+        {
+            let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+            state.integra_version = Some(version.clone());
+        }
+
+        let _ = self.event_tx.send(SatelEvent::IntegraVersionReceived(version));
+        Ok(())
+    }
+
+    fn update_ethm_version_internal(&self, version: EthmVersion) -> Result<(), SatelError> {
+        {
+            let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+            state.ethm_version = Some(version.clone());
+        }
+
+        let _ = self.event_tx.send(SatelEvent::EthmVersionReceived(version));
+        Ok(())
     }
 
     fn update_temp_error(&self, zone_id: u16, error: &SatelError) -> Result<(), SatelError> {
@@ -1653,6 +1680,12 @@ impl SatelAutoRequester {
                                 tracing::info!("SatelAutoRequester: Zmiana stanu połączenia -> {:?}", state);
                                 let _ = self.integra.event_tx.send(SatelEvent::ConnectionChanged(state));
                             }
+                            StateWorkerMessage::IntegraVersion(v) => {
+                                let _ = self.integra.update_integra_version_internal(v);
+                            }
+                            StateWorkerMessage::EthmVersion(v) => {
+                                let _ = self.integra.update_ethm_version_internal(v);
+                            }
                         }
                     } else {
                         break;
@@ -2148,28 +2181,49 @@ impl SatelCommunicationWorker {
         }
     }
 
-    /// Pod-funkcja KROKU 2: Logiczny handshake (pobranie wersji).
+    /// Pod-funkcja KROKU 2: Logiczny handshake (pobranie wersji modułu i centrali).
     async fn satel_connection_worker_connect__handshake(
         &mut self,
         conn_timeout: Duration,
     ) -> Result<(), SatelError> {
-        let cmd_version = vec![SatelCommand::IntegraVersion.to_byte()];
+        // 2a. Wersja modułu ETHM/INT-RS (Obowiązkowa)
+        let cmd_ethm = vec![SatelCommand::ModuleVersion.to_byte()];
         match self
-            .satel_connection_worker_exchange(cmd_version, 0x7E, conn_timeout, conn_timeout)
+            .satel_connection_worker_exchange(cmd_ethm, 0x7C, conn_timeout, conn_timeout)
+            .await
+        {
+            Ok(response) => {
+                let version = process_ethm_version(&response)?;
+                Self::notify_state_worker(&self.state_worker_tx, StateWorkerMessage::EthmVersion(version)).await;
+            }
+            Err(e) => {
+                tracing::error!("Handshake: krytyczny błąd podczas pobierania wersji modułu: {:?}", e);
+                self.satel_connection_worker_connection_lost().await;
+                return Err(e);
+            }
+        }
+
+        // 2b. Wersja centrali (Obowiązkowa)
+        let cmd_integra = vec![SatelCommand::IntegraVersion.to_byte()];
+        match self
+            .satel_connection_worker_exchange(cmd_integra, 0x7E, conn_timeout, conn_timeout)
             .await
         {
             Ok(response) => {
                 let version = process_integra_version(&response)?;
-                let mut s = self.state.write().unwrap();
-                s.integra_version = Some(version);
-                Ok(())
+                Self::notify_state_worker(&self.state_worker_tx, StateWorkerMessage::IntegraVersion(version)).await;
             }
             Err(e) => {
-                tracing::warn!("Handshake: błąd podczas pobierania wersji: {:?}", e);
+                tracing::error!("Handshake: krytyczny błąd podczas pobierania wersji centrali: {:?}", e);
                 self.satel_connection_worker_connection_lost().await;
-                Err(e)
+                return Err(e);
             }
         }
+
+        // Krótka przerwa na przetworzenie wersji przez StateWorkera, aby cache był gotowy do autoodczytu
+        sleep(Duration::from_millis(100)).await;
+
+        Ok(())
     }
 
     /// Pod-funkcja KROKU 3: Konfiguracja powiadomień Push (0x7F).
@@ -2177,7 +2231,16 @@ impl SatelCommunicationWorker {
         &mut self,
         conn_timeout: Duration,
     ) -> Result<(), SatelError> {
-        let mask = Self::satel_connection_worker_connect__build_push_mask(&self.config);
+        // Sprawdzenie możliwości modułu ze stanu
+        let support_14_byte_mask = {
+            let s = self.state.read().unwrap();
+            s.ethm_version
+                .as_ref()
+                .map(|v| v.capabilities.support_8_troubles_groups)
+                .unwrap_or(false)
+        };
+
+        let mask = Self::satel_connection_worker_connect__build_push_mask(&self.config, support_14_byte_mask);
         let mut auto_push_data = vec![SatelCommand::ListOfNewData.to_byte()];
         auto_push_data.extend_from_slice(&mask);
 
@@ -2198,8 +2261,9 @@ impl SatelCommunicationWorker {
     }
 
     /// Pomocnicza funkcja budująca maskę Push. Zwraca Vec<u8> (obsługuje 12 lub 14 bajtów).
-    fn satel_connection_worker_connect__build_push_mask(config: &Config) -> Vec<u8> {
-        let mut mask = vec![0u8; 12]; // Domyślnie 12 bajtów, można rozszerzyć do 14
+    fn satel_connection_worker_connect__build_push_mask(config: &Config, support_14_byte_mask: bool) -> Vec<u8> {
+        let mask_len = if support_14_byte_mask { 14 } else { 12 };
+        let mut mask = vec![0u8; mask_len];
         
         if config.auto_read_zones_violation { mask[0] |= 1 << 0; }
         if config.auto_read_zones_tamper { mask[0] |= 1 << 1; }

@@ -422,6 +422,10 @@ pub enum SatelEvent {
     OutputNameReceived { id: u16, name: String },
     /// Odebrano nazwę strefy (0xEE typ 0).
     PartitionNameReceived { id: u16, name: String },
+    /// Odebrano informacje o wersji centrali (0x7E).
+    IntegraVersionReceived(IntegraVersion),
+    /// Odebrano informacje o wersji modułu komunikacyjnego (0x7C).
+    EthmVersionReceived(EthmVersion),
     /// Otrzymano kod wyniku operacji z panelu (0xEF).
     PanelMessage(SatelResult),
     /// Zmiana stanu awarii systemu.
@@ -519,6 +523,30 @@ pub struct IntegraVersion {
     pub language: String,
     pub stored_in_flash: bool,
     pub io_count: u16,
+    pub read_at: DateTime<Local>,
+}
+
+/// Możliwości i funkcje modułu ETHM (z ramki 0x7C).
+#[derive(Debug, Clone, Copy)]
+pub struct EthmCapabilities {
+    /// Bit 0: Obsługa powiększonych ramek (32 bajty / 256 wejść/wyjść)
+    pub support_32_byte_frames: bool,
+    /// Bit 1: Obsługa 8 grup awarii i 14-bajtowej maski 0x7F
+    pub support_8_troubles_groups: bool,
+    /// Bit 2: Obsługa rozszerzonych komend uzbrajania
+    pub support_extended_arming_commands: bool,
+    pub reserved_bit3: bool,
+    pub reserved_bit4: bool,
+    pub reserved_bit5: bool,
+    pub reserved_bit6: bool,
+    pub reserved_bit7: bool,
+}
+
+/// Informacje o wersji modułu ETHM (z ramki 0x7C).
+#[derive(Debug, Clone)]
+pub struct EthmVersion {
+    pub version_raw: String,
+    pub capabilities: EthmCapabilities,
     pub read_at: DateTime<Local>,
 }
 
@@ -844,6 +872,7 @@ pub struct SatelState {
     pub connection_type: Option<ConnectionType>,
     pub telemetry: ConnectionTelemetry,
     pub integra_version: Option<IntegraVersion>,
+    pub ethm_version: Option<EthmVersion>,
     pub zones: Vec<Zone>,           // Tablica 256 wejść
     pub outputs: Vec<Output>,       // Tablica 256 wyjść
     pub partitions: Vec<Partition>, // Tablica 32 stref
@@ -870,6 +899,7 @@ impl SatelState {
             connection_type: None,
             telemetry: ConnectionTelemetry::new(),
             integra_version: None,
+            ethm_version: None,
             zones,
             outputs,
             partitions,

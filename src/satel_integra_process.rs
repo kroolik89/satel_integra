@@ -1,11 +1,45 @@
 use crate::satel_integra_data::{
-    IntegraVersion, OutputsStateData, PartitionsArmedData, PartitionsData, SatelName, SystemStatus,
-    TroubleType, ZonesAlarmData, ZonesAlarmMemoryData, ZonesBypassData,
-    ZonesLongViolationTroubleData, ZonesNoViolationTroubleData, ZonesTamperAlarmData,
-    ZonesTamperAlarmMemoryData, ZonesTamperData, ZonesViolationData,
+    EthmCapabilities, EthmVersion, IntegraVersion, OutputsStateData, PartitionsArmedData,
+    PartitionsData, SatelName, SystemStatus, TroubleType, ZonesAlarmData, ZonesAlarmMemoryData,
+    ZonesBypassData, ZonesLongViolationTroubleData, ZonesNoViolationTroubleData,
+    ZonesTamperAlarmData, ZonesTamperAlarmMemoryData, ZonesTamperData, ZonesViolationData,
 };
 use crate::satel_integra::SatelError;
 use chrono::{Local, TimeZone};
+
+/// Przetwarza całą ramkę odpowiedzi na komendę 0x7C (Wersja modułu ETHM/INT-RS).
+pub fn process_ethm_version(frame: &[u8]) -> Result<EthmVersion, SatelError> {
+    if frame.is_empty() || frame[0] != 0x7C {
+        return Err(SatelError::InvalidFrame);
+    }
+
+    let data = &frame[1..];
+    if data.len() < 12 {
+        return Err(SatelError::InvalidFrame);
+    }
+
+    // 11 bajtów: Wersja i data (ASCII)
+    let version_raw = String::from_utf8_lossy(&data[0..11]).trim().to_string();
+
+    // 12-ty bajt (indeks 11 w 'data'): Bitmaska możliwości
+    let caps_byte = data[11];
+    let capabilities = EthmCapabilities {
+        support_32_byte_frames: (caps_byte & 0x01) != 0,
+        support_8_troubles_groups: (caps_byte & 0x02) != 0,
+        support_extended_arming_commands: (caps_byte & 0x04) != 0,
+        reserved_bit3: (caps_byte & 0x08) != 0,
+        reserved_bit4: (caps_byte & 0x10) != 0,
+        reserved_bit5: (caps_byte & 0x20) != 0,
+        reserved_bit6: (caps_byte & 0x40) != 0,
+        reserved_bit7: (caps_byte & 0x80) != 0,
+    };
+
+    Ok(EthmVersion {
+        version_raw,
+        capabilities,
+        read_at: Local::now(),
+    })
+}
 
 /// Przetwarza całą ramkę odpowiedzi na komendę 0x7E (Wersja centrali).
 pub fn process_integra_version(frame: &[u8]) -> Result<IntegraVersion, SatelError> {
