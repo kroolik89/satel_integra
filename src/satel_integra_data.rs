@@ -428,6 +428,8 @@ pub enum SatelEvent {
     EthmVersionReceived(EthmVersion),
     /// Otrzymano kod wyniku operacji z panelu (0xEF).
     PanelMessage(SatelResult),
+    /// Konfiguracja autoodczytu zakończona.
+    AutoReadConfigured(AutoReadReport),
     /// Zmiana stanu awarii systemu.
     Trouble(TroubleType, bool),
     /// Zmiana stanu pamięci awarii systemu.
@@ -472,6 +474,56 @@ pub struct SystemStatus {
     pub troubles_present: bool,
     pub troubles_memory: bool,
     pub rtc: DateTime<Local>,
+}
+
+/// Stan poszczególnego elementu autoodczytu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoReadItemState {
+    /// Aktywny i działający.
+    Active,
+    /// Nieżądany w konfiguracji.
+    NotRequested,
+    /// Nieobsługiwany przez sprzęt (wymagane 14 bajtów, dostępne 12).
+    UnsupportedByHardware,
+    /// Odrzucony przez centralę (błąd 0xEF).
+    RejectedByPanel(u8),
+}
+
+impl AutoReadItemState {
+    pub fn to_description(&self) -> String {
+        match self {
+            Self::Active => "Aktywny".to_string(),
+            Self::NotRequested => "Nie żądano".to_string(),
+            Self::UnsupportedByHardware => "Brak wsparcia w ETHM (wymagane 14B)".to_string(),
+            Self::RejectedByPanel(code) => {
+                let desc = match code {
+                    0x01 => "Błąd: Kod użytkownika nieznany",
+                    0x02 => "Błąd: Brak dostępu",
+                    0x03 => "Błąd: Użytkownik nie istnieje",
+                    0x04 => "Błąd: Użytkownik już istnieje",
+                    0x05 => "Błąd: Błędny kod",
+                    0x08 => "Błąd: Inny błąd centrali",
+                    _ => "Błąd: Odrzucono (0xEF)",
+                };
+                format!("{} ({:02X})", desc, code)
+            }
+        }
+    }
+}
+
+/// Status konkretnej kategorii autoodczytu.
+#[derive(Debug, Clone)]
+pub struct AutoReadItemStatus {
+    pub name: String,
+    pub state: AutoReadItemState,
+}
+
+/// Raport zbiorczy z konfiguracji autoodczytu.
+#[derive(Debug, Clone)]
+pub struct AutoReadReport {
+    pub items: Vec<AutoReadItemStatus>,
+    pub success_count: usize,
+    pub total_requested: usize,
 }
 
 /// Reprezentuje czytelne kody wyników operacji zwracane przez centralę (0xEF).

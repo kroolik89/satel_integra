@@ -4,16 +4,15 @@ use crate::satel_integra_data::{
     EthmVersion, ZoneStatus, ZoneTemperature,
 };
 use crate::satel_integra_process::{
-    map_trouble_bit, process_ethm_version, process_integra_version, process_output_name,
-    process_outputs_state,
-    process_partition_name, process_partitions_alarm, process_partitions_alarm_memory,
-    process_partitions_armed_really, process_partitions_armed_suppressed,
-    process_partitions_entry_time, process_partitions_exit_time_gt_10s,
-    process_partitions_exit_time_lt_10s, process_rtc_and_status, process_troubles,
-    process_zone_name, process_zone_temperature, process_zones_alarm, process_zones_alarm_memory,
-    process_zones_bypass, process_zones_long_violation_trouble, process_zones_no_violation_trouble,
-    process_zones_tamper, process_zones_tamper_alarm, process_zones_tamper_alarm_memory,
-    process_zones_violation,
+    map_trouble_bit, process_auto_read_response, process_ethm_version, process_integra_version,
+    process_output_name, process_outputs_state, process_partition_name, process_partitions_alarm,
+    process_partitions_alarm_memory, process_partitions_armed_really,
+    process_partitions_armed_suppressed, process_partitions_entry_time,
+    process_partitions_exit_time_gt_10s, process_partitions_exit_time_lt_10s,
+    process_rtc_and_status, process_troubles, process_zone_name, process_zone_temperature,
+    process_zones_alarm, process_zones_alarm_memory, process_zones_bypass,
+    process_zones_long_violation_trouble, process_zones_no_violation_trouble, process_zones_tamper,
+    process_zones_tamper_alarm, process_zones_tamper_alarm_memory, process_zones_violation,
 };
 use bytes::{Buf, BytesMut};
 use chrono::Local;
@@ -55,6 +54,8 @@ enum StateWorkerMessage {
     IntegraVersion(IntegraVersion),
     /// Odebrano wersję modułu.
     EthmVersion(EthmVersion),
+    /// Raport z konfiguracji autoodczytu.
+    AutoReadReport(crate::satel_integra_data::AutoReadReport),
 }
 
 /// Wewnętrzna wiadomość przesyłane między klientem a workerem.
@@ -1686,6 +1687,9 @@ impl SatelAutoRequester {
                             StateWorkerMessage::EthmVersion(v) => {
                                 let _ = self.integra.update_ethm_version_internal(v);
                             }
+                            StateWorkerMessage::AutoReadReport(report) => {
+                                let _ = self.integra.event_tx.send(SatelEvent::AutoReadConfigured(report));
+                            }
                         }
                     } else {
                         break;
@@ -2240,7 +2244,8 @@ impl SatelCommunicationWorker {
                 .unwrap_or(false)
         };
 
-        let mask = Self::satel_connection_worker_connect__build_push_mask(&self.config, support_14_byte_mask);
+        let mask =
+            Self::satel_connection_worker_connect__build_push_mask(&self.config, support_14_byte_mask);
         let mut auto_push_data = vec![SatelCommand::ListOfNewData.to_byte()];
         auto_push_data.extend_from_slice(&mask);
 
@@ -2248,8 +2253,17 @@ impl SatelCommunicationWorker {
             .satel_connection_worker_exchange(auto_push_data, 0x7F, conn_timeout, conn_timeout)
             .await
         {
-            Ok(_) => {
+            Ok(response) => {
                 tracing::info!("Handshake: konfiguracja Push zakończona");
+
+                // Analiza odpowiedzi i generowanie raportu
+                let report = process_auto_read_response(
+                    &self.config,
+                    support_14_byte_mask,
+                    &response,
+                );
+                Self::notify_state_worker(&self.state_worker_tx, StateWorkerMessage::AutoReadReport(report)).await;
+
                 Ok(())
             }
             Err(e) => {

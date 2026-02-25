@@ -1,8 +1,9 @@
 use crate::satel_integra_data::{
-    EthmCapabilities, EthmVersion, IntegraVersion, OutputsStateData, PartitionsArmedData,
-    PartitionsData, SatelName, SystemStatus, TroubleType, ZonesAlarmData, ZonesAlarmMemoryData,
-    ZonesBypassData, ZonesLongViolationTroubleData, ZonesNoViolationTroubleData,
-    ZonesTamperAlarmData, ZonesTamperAlarmMemoryData, ZonesTamperData, ZonesViolationData,
+    AutoReadItemState, AutoReadItemStatus, AutoReadReport, Config, EthmCapabilities, EthmVersion,
+    IntegraVersion, OutputsStateData, PartitionsArmedData, PartitionsData, SatelName, SystemStatus,
+    TroubleType, ZonesAlarmData, ZonesAlarmMemoryData, ZonesBypassData,
+    ZonesLongViolationTroubleData, ZonesNoViolationTroubleData, ZonesTamperAlarmData,
+    ZonesTamperAlarmMemoryData, ZonesTamperData, ZonesViolationData,
 };
 use crate::satel_integra::SatelError;
 use chrono::{Local, TimeZone};
@@ -780,6 +781,85 @@ pub fn process_troubles(frame: &[u8]) -> Result<Vec<bool>, SatelError> {
     }
 
     Ok(states)
+}
+
+/// Przetwarza odpowiedź na komendę 0x7F i generuje raport stanu autoodczytu.
+pub fn process_auto_read_response(
+    config: &Config,
+    support_14_byte: bool,
+    response: &[u8],
+) -> AutoReadReport {
+    let mask_len = if support_14_byte { 14 } else { 12 };
+
+    // Ustalenie wyniku operacji na podstawie ramki
+    // Sukces: 0x7F (maska) lub 0xEF 0xFF (Accepted)
+    let is_success = if response.is_empty() {
+        false
+    } else if response[0] == 0x7F {
+        true
+    } else if response[0] == 0xEF && response.get(1) == Some(&0xFF) {
+        true
+    } else {
+        false
+    };
+
+    let error_code = if !is_success && response[0] == 0xEF {
+        response.get(1).cloned()
+    } else {
+        None
+    };
+
+    let mut items = Vec::new();
+    let mut success_count = 0;
+    let mut total_requested = 0;
+
+    let defs = vec![
+        ("Naruszenia wejść (0x00)", 0, config.auto_read_zones_violation),
+        ("Sabotaże wejść (0x01)", 0, config.auto_read_zones_tamper),
+        ("Alarmy wejść (0x02)", 0, config.auto_read_zones_alarm),
+        ("Alarmy sabotażowe wejść (0x03)", 0, config.auto_read_zones_tamper_alarm),
+        ("Pamięć alarmów wejść (0x04)", 0, config.auto_read_zones_alarm_memory),
+        ("Pamięć al. sabot. wejść (0x05)", 0, config.auto_read_zones_tamper_alarm_memory),
+        ("Blokady wejść (0x06)", 0, config.auto_read_zones_bypass),
+        ("Awarie 'brak naruszenia' (0x07)", 0, config.auto_read_zones_no_violation_trouble),
+        ("Awarie 'długie narusz.' (0x08)", 1, config.auto_read_zones_long_violation_trouble),
+        ("Uzbrojenie stref (0x09)", 1, config.auto_read_partitions_armed_suppressed),
+        ("Fakt. uzbrojenie stref (0x0A)", 1, config.auto_read_partitions_armed_really),
+        ("Alarmy stref (0x13)", 2, config.auto_read_partitions_alarm),
+        ("Pamięć alarmów stref (0x15)", 2, config.auto_read_partitions_alarm_memory),
+        ("Czas na wejście (0x0E)", 1, config.auto_read_partitions_entry_time),
+        ("Czas na wyjście (0x0F, 0x10)", 1, config.auto_read_partitions_exit_time),
+        ("Stan wyjść (0x17)", 2, config.auto_read_outputs_state),
+        ("Awarie systemu (0x1A-0x30)", 3, config.auto_read_system_troubles),
+        ("Pamięć awarii (0x20-0x31)", 4, config.auto_read_troubles_memory),
+    ];
+
+    for (name, byte_idx, requested) in defs {
+        let state = if !requested {
+            AutoReadItemState::NotRequested
+        } else {
+            total_requested += 1;
+            if byte_idx >= mask_len {
+                AutoReadItemState::UnsupportedByHardware
+            } else if is_success {
+                success_count += 1;
+                AutoReadItemState::Active
+            } else {
+                AutoReadItemState::RejectedByPanel(error_code.unwrap_or(0x08))
+            }
+        };
+
+        items.push(AutoReadItemStatus {
+            name: name.to_string(),
+            state,
+        });
+    }
+
+    AutoReadReport {
+        items,
+        success_count,
+        total_requested,
+    }
 }
 
 /// Mapuje globalny indeks bitu awarii (0-319) na nazwany typ `TroubleType`.

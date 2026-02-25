@@ -54,7 +54,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 SatelEvent::EthmVersionReceived(v) => {
                     println!(">>> PUSH: Otrzymano wersję modułu ETHM: {}", v.version_raw);
                     println!("    Obsługa ramek 32B: {}", v.capabilities.support_32_byte_frames);
-                    println!("    Obsługa 8 grup awarii: {}", v.capabilities.support_8_troubles_groups);
+                    println!(
+                        "    Obsługa 8 grup awarii: {}",
+                        v.capabilities.support_8_troubles_groups
+                    );
+                }
+                SatelEvent::AutoReadConfigured(report) => {
+                    println!("\n   === RAPORT AUTO-ODCZYTU (PUSH) ===");
+                    println!(
+                        "   Skuteczność: {}/{}",
+                        report.success_count, report.total_requested
+                    );
+                    for item in report.items {
+                        use satel_integra::satel_integra_data::AutoReadItemState;
+                        let status_icon = match item.state {
+                            AutoReadItemState::Active => "✅",
+                            AutoReadItemState::NotRequested => "⚪",
+                            AutoReadItemState::UnsupportedByHardware => "⚠️",
+                            AutoReadItemState::RejectedByPanel(_) => "❌",
+                        };
+                        if item.state != AutoReadItemState::NotRequested {
+                            println!(
+                                "   {} {:<30} -> {}",
+                                status_icon,
+                                item.name,
+                                item.state.to_description()
+                            );
+                        }
+                    }
+                    println!("   ===================================\n");
                 }
                 SatelEvent::SystemStatusChanged(s) => {
                     println!(">>> PUSH: Zmiana statusu systemu:");
@@ -81,7 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Pozostawiamy program uruchomiony, aby obserwować przychodzące zdarzenia
     println!("Program będzie działał przez 60 sekund. Obserwuj napływające dane...");
-    sleep(Duration::from_secs(60)).await;
+    sleep(Duration::from_secs(180)).await;
 
     println!("Kończenie testu...");
     satel.disconnect().await?;
