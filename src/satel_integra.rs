@@ -1,7 +1,7 @@
 use crate::satel_integra_data::{
     Config, ConnectionConfig, ConnectionState, ConnectionType, IntegraVersion, OutputName,
     PartitionName, SatelCommand, SatelEvent, SatelResult, SatelState, SatelStateHandle, ZoneName,
-    EthmVersion, ZoneStatus, ZoneTemperature,
+    EthmVersion, ZoneStatus, ZoneTemperature, SystemStatus,
 };
 use crate::satel_integra_process::{
     map_trouble_bit, process_auto_read_response, process_ethm_version, process_integra_version,
@@ -825,6 +825,26 @@ impl SatelIntegra {
         Self::handle_result_code(&response)
     }
 
+    /// Ustawia czas (RTC) w centrali.
+    pub async fn set_satel_time(
+        &self,
+        datetime: chrono::DateTime<chrono::Local>,
+        code: Option<&str>,
+    ) -> Result<(), SatelError> {
+        let resolved_code = self.resolve_code(code)?;
+        tracing::info!("Ustawianie czasu w centrali na {}...", datetime);
+
+        let mut data = vec![SatelCommand::SetRtcClock.to_byte()];
+        data.extend_from_slice(&Self::format_user_code(&resolved_code));
+
+        // Format daty: YYYYMMDDHHMMSS (14 bajtów ASCII)
+        let time_str = datetime.format("%Y%m%d%H%M%S").to_string();
+        data.extend_from_slice(time_str.as_bytes());
+
+        let response = self.exchange(data, None, None).await?;
+        Self::handle_result_code(&response)
+    }
+
     /// Steruje wyjściem (włącza/wyłącza). Metoda wewnętrzna.
     async fn set_output(&self, output_id: u16, state: bool, code: Option<&str>) -> Result<(), SatelError> {
         if output_id < 1 || output_id > 256 {
@@ -1572,7 +1592,7 @@ impl SatelIntegra {
     }
 
     /// Pobiera ogólny status systemu i aktualizuje cache.
-    pub async fn get_system_status(&self) -> Result<(), SatelError> {
+    pub async fn get_system_status(&self) -> Result<SystemStatus, SatelError> {
         tracing::info!("Pobieranie statusu systemu (RTC)...");
 
         let cmd = vec![SatelCommand::RtcAndBasicStatusBits.to_byte()];
@@ -1582,7 +1602,13 @@ impl SatelIntegra {
         self.update_system_status_internal(status)?;
 
         tracing::info!("Zaktualizowano status systemu");
-        Ok(())
+        Ok(status)
+    }
+
+    /// Pobiera aktualny czas z centrali.
+    pub async fn get_satel_time(&self) -> Result<chrono::DateTime<chrono::Local>, SatelError> {
+        let status = self.get_system_status().await?;
+        Ok(status.rtc)
     }
 
     fn update_system_status_internal(
