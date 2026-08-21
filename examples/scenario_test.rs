@@ -1,5 +1,5 @@
-use satel_integra::satel_integra::SatelIntegra;
-use satel_integra::satel_integra_data::{Config, ConnectionConfig, SatelEvent};
+use satel_integra::SatelIntegra;
+use satel_integra::{Config, ConnectionConfig, SatelEvent};
 use std::time::Duration;
 use tokio::time::sleep;
 

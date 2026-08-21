@@ -1,4 +1,4 @@
-use satel_integra::satel_integra_data::{Config, ConnectionConfig, SatelEvent};
+use satel_integra::{Config, ConnectionConfig, SatelEvent};
 use satel_integra::SatelIntegra;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -66,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         report.success_count, report.total_requested
                     );
                     for item in report.items {
-                        use satel_integra::satel_integra_data::AutoReadItemState;
+                        use satel_integra::AutoReadItemState;
                         let status_icon = match item.state {
                             AutoReadItemState::Active => "✅",
                             AutoReadItemState::NotRequested => "⚪",

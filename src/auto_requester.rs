@@ -1,0 +1,172 @@
+use crate::client::SatelIntegra;
+use crate::command::{SatelCommand, SatelResult};
+use crate::event::SatelEvent;
+use crate::parsers::{
+    process_outputs_state, process_partitions_alarm, process_partitions_alarm_memory,
+    process_partitions_armed_really, process_partitions_armed_suppressed,
+    process_partitions_entry_time, process_partitions_exit_time_gt_10s,
+    process_partitions_exit_time_lt_10s, process_rtc_and_status, process_troubles,
+    process_zones_alarm, process_zones_alarm_memory, process_zones_bypass,
+    process_zones_long_violation_trouble, process_zones_no_violation_trouble, process_zones_tamper,
+    process_zones_tamper_alarm, process_zones_tamper_alarm_memory, process_zones_violation,
+};
+use crate::worker::StateWorkerMessage;
+use tokio::sync::mpsc;
+
+/// SatelAutoRequester odpowiada za przetwarzanie danych Push
+/// oraz utrzymywanie aktualności stanu cache.
+pub(crate) struct SatelAutoRequester {
+    pub integra: SatelIntegra,
+    pub rx: mpsc::Receiver<StateWorkerMessage>,
+}
+
+impl SatelAutoRequester {
+    pub async fn run(&mut self) {
+        tracing::info!("SatelAutoRequester uruchomiony");
+
+        loop {
+            tokio::select! {
+                maybe_msg = self.rx.recv() => {
+                    if let Some(msg) = maybe_msg {
+                        match msg {
+                            StateWorkerMessage::Frame(frame) => {
+                                self.handle_auto_frame(&frame);
+                            }
+                            StateWorkerMessage::StatusChanged(state) => {
+                                tracing::info!("SatelAutoRequester: Zmiana stanu połączenia -> {:?}", state);
+                                let _ = self.integra.event_tx.send(SatelEvent::ConnectionChanged(state));
+                            }
+                            StateWorkerMessage::IntegraVersion(v) => {
+                                let _ = self.integra.update_integra_version_internal(v);
+                            }
+                            StateWorkerMessage::EthmVersion(v) => {
+                                let _ = self.integra.update_ethm_version_internal(v);
+                            }
+                            StateWorkerMessage::AutoReadReport(report) => {
+                                let _ = self.integra.event_tx.send(SatelEvent::AutoReadConfigured(report));
+                            }
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        tracing::info!("SatelAutoRequester zatrzymany");
+    }
+
+    fn handle_auto_frame(&mut self, frame: &[u8]) {
+        if frame.is_empty() {
+            return;
+        }
+
+        match frame[0] {
+            0x00 => {
+                if let Ok(d) = process_zones_violation(frame, &self.integra.config.io_violation_invert) {
+                    let _ = self.integra.update_zones_violation_internal(d);
+                }
+            }
+            0x01 => {
+                if let Ok(d) = process_zones_tamper(frame, &self.integra.config.io_tamper_invert) {
+                    let _ = self.integra.update_zones_tamper_internal(d);
+                }
+            }
+            0x02 => {
+                if let Ok(d) = process_zones_alarm(frame, &self.integra.config.io_alarm_invert) {
+                    let _ = self.integra.update_zones_alarm_internal(d);
+                }
+            }
+            0x03 => {
+                if let Ok(d) = process_zones_tamper_alarm(frame, &self.integra.config.io_tamper_alarm_invert) {
+                    let _ = self.integra.update_zones_tamper_alarm_internal(d);
+                }
+            }
+            0x04 => {
+                if let Ok(d) = process_zones_alarm_memory(frame, &self.integra.config.io_alarm_memory_invert) {
+                    let _ = self.integra.update_zones_alarm_memory_internal(d);
+                }
+            }
+            0x05 => {
+                if let Ok(d) = process_zones_tamper_alarm_memory(frame, &self.integra.config.io_tamper_alarm_memory_invert) {
+                    let _ = self.integra.update_zones_tamper_alarm_memory_internal(d);
+                }
+            }
+            0x06 => {
+                if let Ok(d) = process_zones_bypass(frame, &self.integra.config.io_bypass_invert) {
+                    let _ = self.integra.update_zones_bypass_internal(d);
+                }
+            }
+            0x07 => {
+                if let Ok(d) = process_zones_no_violation_trouble(frame, &self.integra.config.io_no_violation_trouble_invert) {
+                    let _ = self.integra.update_zones_no_violation_trouble_internal(d);
+                }
+            }
+            0x08 => {
+                if let Ok(d) = process_zones_long_violation_trouble(frame, &self.integra.config.io_long_violation_trouble_invert) {
+                    let _ = self.integra.update_zones_long_violation_trouble_internal(d);
+                }
+            }
+            0x09 => {
+                if let Ok(d) = process_partitions_armed_suppressed(frame) {
+                    let _ = self.integra.update_partitions_armed_internal(d);
+                }
+            }
+            0x0A => {
+                if let Ok(d) = process_partitions_armed_really(frame) {
+                    let _ = self.integra.update_partitions_armed_really_internal(d);
+                }
+            }
+            0x13 => {
+                if let Ok(d) = process_partitions_alarm(frame) {
+                    let _ = self.integra.update_partitions_alarm_internal(d);
+                }
+            }
+            0x0E => {
+                if let Ok(d) = process_partitions_entry_time(frame) {
+                    let _ = self.integra.update_partitions_entry_time_internal(d);
+                }
+            }
+            0x0F => {
+                if let Ok(d) = process_partitions_exit_time_gt_10s(frame) {
+                    let _ = self.integra.update_partitions_exit_time_gt_10s_internal(d);
+                }
+            }
+            0x10 => {
+                if let Ok(d) = process_partitions_exit_time_lt_10s(frame) {
+                    let _ = self.integra.update_partitions_exit_time_lt_10s_internal(d);
+                }
+            }
+            0x15 => {
+                if let Ok(d) = process_partitions_alarm_memory(frame) {
+                    let _ = self.integra.update_partitions_alarm_memory_internal(d);
+                }
+            }
+            0x17 => {
+                if let Ok(d) = process_outputs_state(frame) {
+                    let _ = self.integra.update_outputs_state_internal(d);
+                }
+            }
+            0x1A => {
+                if let Ok(s) = process_rtc_and_status(frame) {
+                    let _ = self.integra.update_system_status_internal(s);
+                }
+            }
+            0x1B..=0x1F | 0x2C | 0x2D | 0x30 | 0x20..=0x24 | 0x2E | 0x2F | 0x31 => {
+                if let Some(cmd) = SatelCommand::from_byte(frame[0]) {
+                    if let Ok(states) = process_troubles(frame) {
+                        let _ = self.integra.update_troubles_internal(cmd, states);
+                    }
+                }
+            }
+            0xEF => {
+                let code = frame.get(1).cloned().unwrap_or(0xFF);
+                if code != 0xFF {
+                    let result = SatelResult::from_byte(code);
+                    let _ = self.integra.event_tx.send(SatelEvent::PanelMessage(result));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+

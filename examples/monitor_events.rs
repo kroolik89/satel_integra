@@ -1,5 +1,5 @@
-use satel_integra::satel_integra::SatelIntegra;
-use satel_integra::satel_integra_data::{Config, ConnectionConfig, SatelEvent};
+use satel_integra::SatelIntegra;
+use satel_integra::{Config, ConnectionConfig, SatelEvent};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

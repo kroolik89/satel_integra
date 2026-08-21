@@ -1,5 +1,5 @@
 use satel_integra::SatelIntegra;
-use satel_integra::satel_integra_data::{Config, ConnectionConfig, SatelEvent};
+use satel_integra::{Config, ConnectionConfig, SatelEvent};
 use chrono::Local;
 use std::io::{self, Write};
 use std::time::Duration;

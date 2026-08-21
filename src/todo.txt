@@ -1,8 +1,0 @@
-Dodaj do pliku listeToDo:
--Sprawdzić sposób odczytu wersji ETHM
--Sprawdzić sposób włączania subskrybcji autoodczytu.
--Dodać obsługę odczytu czasu
--dodać obsługę zapisu czasu 
--dodać obsługę odczytu zdarzeń
--Podzielić projekt na mniejszze pliki
--dodać obsługę 16bajtowych odpowiedzi 
