@@ -7,7 +7,7 @@
 //! use satel_integra::{SatelIntegra, Config, ConnectionConfig};
 //!
 //! #[tokio::main]
-//! async fn main() -> anyhow::Result<()> {
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let config = Config {
 //!         connection: ConnectionConfig::Tcp {
 //!             host: "192.168.1.100".to_string(),
@@ -96,9 +96,9 @@ pub fn init_logging() {
 
                 let target = meta.module_path().unwrap_or(meta.target());
 
-                write!(
+                writeln!(
                     writer,
-                    "{} | {:5} | {} | {} |\n",
+                    "{} | {:5} | {} | {} |",
                     now.format("%H:%M:%S:%3f %d.%m.%Y"),
                     meta.level().to_string(),
                     file_short,

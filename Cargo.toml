@@ -2,6 +2,19 @@
 name = "satel_integra"
 version = "0.1.0"
 edition = "2021"
+authors = ["Marcin Król <krol.marcin1989@gmail.com>"]
+description = "Asynchronous Rust client for Satel Integra alarm control panels via ETHM-1 Plus (TCP/IP) and UART (RS-232)."
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/kroolik89/satel_integra"
+keywords = ["satel", "integra", "alarm", "home-automation", "security"]
+categories = ["hardware-support", "asynchronous", "network-programming"]
+exclude = [
+    ".clinerules",
+    "opis dla AI.txt",
+    "opis protokołu/*",
+    "create/*",
+]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

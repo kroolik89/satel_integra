@@ -126,14 +126,15 @@ impl SatelCommunicationWorker {
                     }
 
                     // 3. Podtrzymywanie połączenia (Auto-reconnect)
-                    if should_reconnect && current_state == ConnectionState::ConnectionLost {
-                        if last_event.elapsed() >= self.calculate_backoff() {
-                            tracing::info!("Auto-reconnect: Podejmowanie próby połączenia...");
-                            if let Ok(s) = self.state.read() {
-                                s.telemetry.reconnect_count.fetch_add(1, Ordering::Relaxed);
-                            }
-                            let _ = self.satel_connection_worker_connect().await;
+                    if should_reconnect
+                        && current_state == ConnectionState::ConnectionLost
+                        && last_event.elapsed() >= self.calculate_backoff()
+                    {
+                        tracing::info!("Auto-reconnect: Podejmowanie próby połączenia...");
+                        if let Ok(s) = self.state.read() {
+                            s.telemetry.reconnect_count.fetch_add(1, Ordering::Relaxed);
                         }
+                        let _ = self.satel_connection_worker_connect().await;
                     }
                 }
             }
@@ -185,9 +186,10 @@ impl SatelCommunicationWorker {
             }
             InternalMessage::Connect { response_tx } => {
                 let state = self.get_current_state();
-                if state == ConnectionState::Connected {
-                    let _ = response_tx.send(Err(SatelError::AlreadyConnected));
-                } else if state == ConnectionState::Connecting || state == ConnectionState::Handshake {
+                if state == ConnectionState::Connected
+                    || state == ConnectionState::Connecting
+                    || state == ConnectionState::Handshake
+                {
                     let _ = response_tx.send(Err(SatelError::AlreadyConnected));
                 } else {
                     let result = self.satel_connection_worker_connect().await;
@@ -349,7 +351,7 @@ impl SatelCommunicationWorker {
             }
         };
 
-        self.stream = Some(Framed::new(stream, SatelCodec::default()));
+        self.stream = Some(Framed::new(stream, SatelCodec));
         self.set_state_handshake().await;
 
         sleep(Duration::from_millis(200)).await;

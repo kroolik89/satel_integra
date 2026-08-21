@@ -63,8 +63,12 @@ impl SatelIntegra {
     /// Uruchamia połączenie i workera w tle.
     /// Jeśli worker już działa, próbuje wymusić ponowne połączenie.
     pub async fn connect(&self) -> Result<(), SatelError> {
-        let mut worker_lock = self.worker.lock().unwrap();
-        if let Some(mut worker) = worker_lock.take() {
+        let maybe_worker = {
+            let mut worker_lock = self.worker.lock().unwrap();
+            worker_lock.take()
+        };
+
+        if let Some(mut worker) = maybe_worker {
             let (state_worker_tx, state_worker_rx) = mpsc::channel(100);
             worker.state_worker_tx = Some(state_worker_tx);
 
@@ -222,7 +226,19 @@ impl SatelIntegra {
         let response = self.exchange(cmd, None, None).await?;
 
         if !response.is_empty() && response[0] == SatelCommand::ResultCode.to_byte() {
-            return Err(SatelError::InvalidFrame);
+            // Panel returned 0xEF (ResultCode) indicating the requested zone is not configured or unassigned
+            let empty_name = ZoneName {
+                name: String::new(),
+                read_at: chrono::Local::now(),
+            };
+            {
+                let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+                if let Some(zone) = state.zones.get_mut((zone_id.wrapping_sub(1) % 256) as usize) {
+                    zone.zone_name = String::new();
+                    zone.zone_name_read_at = empty_name.read_at;
+                }
+            }
+            return Ok(empty_name);
         }
 
         let (id, s_name) = process_zone_name(&response)?;
@@ -268,7 +284,19 @@ impl SatelIntegra {
         let response = self.exchange(cmd, None, None).await?;
 
         if !response.is_empty() && response[0] == SatelCommand::ResultCode.to_byte() {
-            return Err(SatelError::InvalidFrame);
+            // Panel returned 0xEF (ResultCode) indicating the requested output is not configured or unassigned
+            let empty_name = OutputName {
+                name: String::new(),
+                read_at: chrono::Local::now(),
+            };
+            {
+                let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+                if let Some(output) = state.outputs.get_mut((output_id.wrapping_sub(1) % 256) as usize) {
+                    output.name = String::new();
+                    output.name_read_at = empty_name.read_at;
+                }
+            }
+            return Ok(empty_name);
         }
 
         let (id, s_name) = process_output_name(&response)?;
@@ -314,7 +342,19 @@ impl SatelIntegra {
         let response = self.exchange(cmd, None, None).await?;
 
         if !response.is_empty() && response[0] == SatelCommand::ResultCode.to_byte() {
-            return Err(SatelError::InvalidFrame);
+            // Panel returned 0xEF (ResultCode) indicating the requested partition is not configured or unassigned
+            let empty_name = PartitionName {
+                name: String::new(),
+                read_at: chrono::Local::now(),
+            };
+            {
+                let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+                if let Some(partition) = state.partitions.get_mut((partition_id.wrapping_sub(1) % 32) as usize) {
+                    partition.name = String::new();
+                    partition.name_read_at = empty_name.read_at;
+                }
+            }
+            return Ok(empty_name);
         }
 
         let (id, partition_name) = process_partition_name(&response)?;
@@ -719,7 +759,7 @@ impl SatelIntegra {
         force: bool,
         code: Option<&str>,
     ) -> Result<(), SatelError> {
-        if partition_id < 1 || partition_id > 32 {
+        if !(1..=32).contains(&partition_id) {
             return Err(SatelError::NoAccess);
         }
 
@@ -786,7 +826,7 @@ impl SatelIntegra {
 
     /// Rozbraja wybraną strefę.
     pub async fn disarm(&self, partition_id: u16, code: Option<&str>) -> Result<(), SatelError> {
-        if partition_id < 1 || partition_id > 32 {
+        if !(1..=32).contains(&partition_id) {
             return Err(SatelError::NoAccess);
         }
 
@@ -807,7 +847,7 @@ impl SatelIntegra {
 
     /// Kasuje alarm w wybranej strefie.
     pub async fn clear_alarm(&self, partition_id: u16, code: Option<&str>) -> Result<(), SatelError> {
-        if partition_id < 1 || partition_id > 32 {
+        if !(1..=32).contains(&partition_id) {
             return Err(SatelError::NoAccess);
         }
 
@@ -861,7 +901,7 @@ impl SatelIntegra {
         output_id: u16,
         code: Option<&str>,
     ) -> Result<(), SatelError> {
-        if output_id < 1 || output_id > 256 {
+        if !(1..=256).contains(&output_id) {
             return Err(SatelError::NoAccess);
         }
 
@@ -884,7 +924,7 @@ impl SatelIntegra {
 
     /// Steruje wyjściem (włącza/wyłącza).
     async fn set_output(&self, output_id: u16, state: bool, code: Option<&str>) -> Result<(), SatelError> {
-        if output_id < 1 || output_id > 256 {
+        if !(1..=256).contains(&output_id) {
             return Err(SatelError::NoAccess);
         }
 
@@ -966,7 +1006,7 @@ impl SatelIntegra {
                 Err(SatelError::CanNotArm)
             }
             0xFF => {
-                tracing::debug!("Centrala: Operacja w toku (0xFF)");
+                tracing::debug!("Centrala: Polecenie zaakceptowane / operacja w toku (0xFF)");
                 Ok(())
             }
             _ => {

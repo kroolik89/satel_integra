@@ -305,8 +305,8 @@ impl SatelIntegra {
 
     pub(crate) fn update_troubles_internal(&self, cmd: SatelCommand, states: Vec<bool>) -> Result<(), SatelError> {
         let byte_cmd = cmd.to_byte();
-        let is_memory = (byte_cmd >= 0x20 && byte_cmd <= 0x24)
-            || (byte_cmd >= 0x2E && byte_cmd <= 0x2F)
+        let is_memory = (0x20..=0x24).contains(&byte_cmd)
+            || (0x2E..=0x2F).contains(&byte_cmd)
             || byte_cmd == 0x31;
 
         let base_index = match byte_cmd {

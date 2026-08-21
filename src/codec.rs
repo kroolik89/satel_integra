@@ -9,7 +9,7 @@ fn calculate_crc(data: &[u8]) -> u16 {
     for &byte in data {
         crc = crc.rotate_left(1);
         crc ^= 0xFFFF;
-        crc = crc.wrapping_add((crc >> 8) as u16);
+        crc = crc.wrapping_add(crc >> 8);
         crc = crc.wrapping_add(byte as u16);
     }
     crc
@@ -28,24 +28,21 @@ impl Decoder for SatelCodec {
     type Error = io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        loop {
-            if src.len() < 2 {
-                return Ok(None);
+        if src.len() < 2 {
+            return Ok(None);
+        }
+        if let Some(pos) = src.windows(2).position(|w| w == [0xFE, 0xFE]) {
+            if pos > 0 {
+                src.advance(pos);
             }
-            if let Some(pos) = src.windows(2).position(|w| w == [0xFE, 0xFE]) {
-                if pos > 0 {
-                    src.advance(pos);
-                }
-                break;
+        } else {
+            let to_advance = if src.last() == Some(&0xFE) {
+                src.len() - 1
             } else {
-                let to_advance = if src.last() == Some(&0xFE) {
-                    src.len() - 1
-                } else {
-                    src.len()
-                };
-                src.advance(to_advance);
-                return Ok(None);
-            }
+                src.len()
+            };
+            src.advance(to_advance);
+            return Ok(None);
         }
 
         if let Some(pos) = src.windows(2).position(|window| window == [0xFE, 0x0D]) {

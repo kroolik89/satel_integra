@@ -539,6 +539,12 @@ pub struct SatelState {
     pub troubles_memory: [bool; 320],
 }
 
+impl Default for SatelState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SatelState {
     pub fn new() -> Self {
         let mut zones = Vec::with_capacity(256);
