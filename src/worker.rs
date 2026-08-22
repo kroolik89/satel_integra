@@ -14,32 +14,30 @@ use tokio::time::{sleep, timeout};
 use tokio_serial::SerialPortBuilderExt;
 use tokio_util::codec::Framed;
 
-/// Trait pomocniczy, łączący AsyncRead i AsyncWrite.
+/// Helper trait combining `AsyncRead` and `AsyncWrite`.
 pub(crate) trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> AsyncReadWrite for T {}
 
-/// Typ strumienia I/O, opakowany w `Framed` z naszym kodekiem.
+/// Framing type wrapping the I/O stream with `SatelCodec`.
 type FramedStream = Framed<Box<dyn AsyncReadWrite>, SatelCodec>;
 
-
-
-/// Wiadomości przesyłane do SatelAutoRequester.
+/// Messages forwarded to the `SatelAutoRequester` state worker.
 pub(crate) enum StateWorkerMessage {
-    /// Ramka otrzymana z centrali (np. Push).
+    /// Frame received from the panel (e.g. unsolicited Push notification).
     Frame(Vec<u8>),
-    /// Zmiana stanu połączenia.
+    /// Connection state transition.
     StatusChanged(ConnectionState),
-    /// Odebrano wersję centrali.
+    /// Integra panel version received.
     IntegraVersion(crate::state::IntegraVersion),
-    /// Odebrano wersję modułu.
+    /// ETHM module version received.
     EthmVersion(crate::state::EthmVersion),
-    /// Raport z konfiguracji autoodczytu.
+    /// Auto-read configuration result report.
     AutoReadReport(crate::state::AutoReadReport),
 }
 
-/// Wewnętrzna wiadomość przesyłana między klientem a workerem.
+/// Internal actor messages passed between the client and worker actor.
 pub(crate) enum InternalMessage {
-    /// Standardowa wymiana danych (tylko w stanie Connected).
+    /// Standard command exchange (valid only in Connected state).
     ExchangeStandard {
         data: Vec<u8>,
         write_timeout: Duration,
@@ -48,7 +46,7 @@ pub(crate) enum InternalMessage {
         max_queue_time: Duration,
         response_tx: oneshot::Sender<Result<Vec<u8>, SatelError>>,
     },
-    /// Priorytetowa wymiana danych (dozwolona w Connecting, Handshake, Connected).
+    /// Priority command exchange (allowed during Connecting, Handshake, Connected).
     ExchangePriority {
         data: Vec<u8>,
         write_timeout: Duration,
@@ -63,7 +61,7 @@ pub(crate) enum InternalMessage {
     },
 }
 
-/// Worker zarządzający fizycznym połączeniem w tle.
+/// Background actor worker managing the physical socket/serial connection.
 pub(crate) struct SatelCommunicationWorker {
     pub config: Config,
     pub state: SatelStateHandle,
@@ -73,18 +71,18 @@ pub(crate) struct SatelCommunicationWorker {
 }
 
 impl SatelCommunicationWorker {
-    /// Główna pętla workera z obsługą początkowego połączenia.
-    pub async fn run_with_initial_connect(mut self, on_connect: oneshot::Sender<Result<(), SatelError>>) {
+    /// Main worker loop with initial connect result signaling.
+    pub async fn run(mut self, on_connect: oneshot::Sender<Result<(), SatelError>>) {
         let result = self.satel_connection_worker_connect().await;
         if let Err(e) = &result {
-            tracing::error!("Początkowe połączenie nieudane: {:?}", e);
+            tracing::error!("Initial connection failed: {:?}", e);
         }
         let _ = on_connect.send(result);
-        self.run().await;
+        self.run_loop().await;
     }
 
-    /// Główna pętla workera.
-    pub async fn run(mut self) {
+    /// Primary actor event loop.
+    pub async fn run_loop(&mut self) {
         let mut ping_interval = tokio::time::interval(Duration::from_secs(1));
 
         loop {
@@ -101,7 +99,7 @@ impl SatelCommunicationWorker {
 
                 res = Self::receive_push_internal(&mut self.stream, &self.state, &self.state_worker_tx), if self.stream.is_some() && self.get_current_state() == ConnectionState::Connected => {
                     if let Err(e) = res {
-                        tracing::error!("Błąd podczas odbierania danych Push / Stream: {:?}", e);
+                        tracing::error!("Error receiving Push / Stream frame: {:?}", e);
                         self.satel_connection_worker_connection_lost().await;
                     }
                 }
@@ -112,25 +110,25 @@ impl SatelCommunicationWorker {
                         (s.telemetry.status.state, s.telemetry.last_send_at, s.telemetry.status.last_event_at)
                     };
 
-                    // 1. Watchdog dla Connecting / Handshake
+                    // 1. Watchdog for Connecting / Handshake
                     if (current_state == ConnectionState::Connecting || current_state == ConnectionState::Handshake)
                         && last_event.elapsed() > Duration::from_secs(15) {
-                        tracing::warn!("Watchdog: Przekroczono czas łączenia/handshake (15s)");
+                        tracing::warn!("Watchdog: Connection/handshake timeout exceeded (15s)");
                         self.satel_connection_worker_connection_lost().await;
                     }
 
-                    // 2. Ping (Keep-alive)
+                    // 2. Ping keep-alive
                     if current_state == ConnectionState::Connected && last_send.elapsed() >= Duration::from_secs(2) {
                         let cmd = vec![SatelCommand::IntegraVersion.to_byte()];
                         let _ = self.satel_connection_worker_exchange(cmd, 0x7E, Duration::from_millis(500), Duration::from_millis(500)).await;
                     }
 
-                    // 3. Podtrzymywanie połączenia (Auto-reconnect)
+                    // 3. Automatic reconnect with exponential backoff
                     if should_reconnect
                         && current_state == ConnectionState::ConnectionLost
                         && last_event.elapsed() >= self.calculate_backoff()
                     {
-                        tracing::info!("Auto-reconnect: Podejmowanie próby połączenia...");
+                        tracing::info!("Auto-reconnect: Attempting reconnection...");
                         if let Ok(s) = self.state.read() {
                             s.telemetry.reconnect_count.fetch_add(1, Ordering::Relaxed);
                         }
@@ -139,7 +137,7 @@ impl SatelCommunicationWorker {
                 }
             }
         }
-        tracing::info!("SatelCommunicationWorker zatrzymany");
+        tracing::info!("SatelCommunicationWorker terminated");
     }
 
     async fn handle_message_internal(&mut self, msg: InternalMessage) {
@@ -342,7 +340,7 @@ impl SatelCommunicationWorker {
 
         let conn_timeout = Duration::from_millis(self.config.read_timeout_ms);
 
-        // KROK 1: Połączenie fizyczne
+        // STEP 1: Physical transport connection
         let stream = match self.satel_connection_worker_connect_physical(conn_timeout).await {
             Ok(s) => s,
             Err(e) => {
@@ -356,16 +354,16 @@ impl SatelCommunicationWorker {
 
         sleep(Duration::from_millis(200)).await;
 
-        // KROK 2: Handshake
+        // STEP 2: Protocol Handshake
         self.satel_connection_worker_connect_handshake(conn_timeout).await?;
 
-        // KROK 3: Konfiguracja autoodczytu
+        // STEP 3: Configure Auto-read push notifications
         if self.config.is_auto_read_enabled() {
             self.satel_connection_worker_connect_auto_read(conn_timeout).await?;
         }
 
         self.set_state_connected().await;
-        tracing::info!("Połączenie i Handshake zakończone pomyślnie");
+        tracing::info!("Connection and Handshake successfully established");
         Ok(())
     }
 
@@ -373,7 +371,7 @@ impl SatelCommunicationWorker {
         &mut self,
         conn_timeout: Duration,
     ) -> Result<Box<dyn AsyncReadWrite>, SatelError> {
-        tracing::info!("Podejmowanie próby połączenia fizycznego...");
+        tracing::info!("Attempting physical connection...");
 
         let connection_config = self.config.connection.clone();
 
@@ -408,7 +406,7 @@ impl SatelCommunicationWorker {
         &mut self,
         conn_timeout: Duration,
     ) -> Result<(), SatelError> {
-        // 2a. Wersja modułu ETHM/INT-RS
+        // 2a. Query ETHM/INT-RS module version
         let cmd_ethm = vec![SatelCommand::ModuleVersion.to_byte()];
         match self
             .satel_connection_worker_exchange(cmd_ethm, 0x7C, conn_timeout, conn_timeout)
@@ -419,13 +417,13 @@ impl SatelCommunicationWorker {
                 Self::notify_state_worker(&self.state_worker_tx, StateWorkerMessage::EthmVersion(version)).await;
             }
             Err(e) => {
-                tracing::error!("Handshake: krytyczny błąd podczas pobierania wersji modułu: {:?}", e);
+                tracing::error!("Handshake: critical error querying module version: {:?}", e);
                 self.satel_connection_worker_connection_lost().await;
                 return Err(e);
             }
         }
 
-        // 2b. Wersja centrali
+        // 2b. Query Integra panel version
         let cmd_integra = vec![SatelCommand::IntegraVersion.to_byte()];
         match self
             .satel_connection_worker_exchange(cmd_integra, 0x7E, conn_timeout, conn_timeout)
@@ -436,7 +434,7 @@ impl SatelCommunicationWorker {
                 Self::notify_state_worker(&self.state_worker_tx, StateWorkerMessage::IntegraVersion(version)).await;
             }
             Err(e) => {
-                tracing::error!("Handshake: krytyczny błąd podczas pobierania wersji centrali: {:?}", e);
+                tracing::error!("Handshake: critical error querying panel version: {:?}", e);
                 self.satel_connection_worker_connection_lost().await;
                 return Err(e);
             }
@@ -467,13 +465,13 @@ impl SatelCommunicationWorker {
             .await
         {
             Ok(response) => {
-                tracing::info!("Handshake: konfiguracja Push zakończona");
+                tracing::info!("Handshake: push notification configuration successful");
                 let report = process_auto_read_response(&self.config, support_14_byte_mask, &response);
                 Self::notify_state_worker(&self.state_worker_tx, StateWorkerMessage::AutoReadReport(report)).await;
                 Ok(())
             }
             Err(e) => {
-                tracing::warn!("Handshake: błąd podczas konfiguracji Push: {:?}", e);
+                tracing::warn!("Handshake: error during push notification configuration: {:?}", e);
                 self.satel_connection_worker_connection_lost().await;
                 Err(e)
             }

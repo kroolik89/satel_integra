@@ -13,6 +13,8 @@
 //!   5. Smart Temperature Error Blocking & Queue Protection
 //!   6. Software Zone State Inversions (Violated <-> Normal, Tamper <-> OK)
 //!   7. Hardware Auto-Push Subscriptions (ETHM-1 / INT-RS Command 0x7F)
+//!   8. Background Periodic Polling (Wireless Temperature & Telemetry)
+//!   9. Event Emission & Deduplication Filtering (emit_unchanged_*)
 //!
 //! ============================================================================
 //! 2. CONFIGURATION REFERENCE TABLE & DEFAULTS:
@@ -56,6 +58,15 @@
 //! auto_read_outputs_state            | bool             | false        | Auto-Push: Outputs / relays ON/OFF (0x17)
 //! auto_read_system_troubles          | bool             | false        | Auto-Push: Active troubles parts 1..8 (0x1B-0x30)
 //! auto_read_troubles_memory          | bool             | false        | Auto-Push: Trouble memory parts 1..8 (0x20-0x31)
+//! polling_temperatures               | bool             | false        | Enable background cyclic polling for temperatures
+//! polling_temperatures_zones         | Vec<u16>         | [] (Empty)   | Background cyclic polling: Zone IDs with temp sensors
+//! polling_temperatures_interval_m... | u64              | 1 minute     | Background cyclic polling: Interval in minutes (min: 1)
+//! emit_unchanged_temperatures        | bool             | false        | Emit temp event on every read even if unchanged
+//! emit_unchanged_zones               | bool             | false        | Emit zone events on every read even if unchanged
+//! emit_unchanged_outputs             | bool             | false        | Emit output events on every read even if unchanged
+//! emit_unchanged_partitions          | bool             | false        | Emit partition events on every read even if unchanged
+//! emit_unchanged_troubles            | bool             | false        | Emit trouble events on every read even if unchanged
+//! emit_unchanged_system_status       | bool             | false        | Emit system status on every read even if unchanged
 //!
 //! ============================================================================
 //! 3. EXECUTION INSTRUCTIONS:
@@ -242,6 +253,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Automatically stream trouble memory changes across parts 1..8 (0x20-0x31).
         auto_read_troubles_memory: true,
+
+        // --------------------------------------------------------------------
+        // 8. Background Periodic Polling (Wireless Temperature & Telemetry)
+        // --------------------------------------------------------------------
+        // Explicitly enable background periodic temperature polling. Default: false.
+        polling_temperatures: true,
+
+        // List zone IDs (1..256) with temperature sensors to poll cyclically in background.
+        // Default: [] (empty — manual polling only).
+        polling_temperatures_zones: vec![21, 22, 23, 24],
+
+        // Interval in minutes between temperature polling cycles (min: 1). Default: 1.
+        polling_temperatures_interval_minutes: 1,
+
+        // --------------------------------------------------------------------
+        // 9. Event Emission & Deduplication Filtering (emit_unchanged_*)
+        // --------------------------------------------------------------------
+        // Emit temperature events on every query even if value is unchanged. Default: false.
+        emit_unchanged_temperatures: true,
+
+        // Emit zone events on every read even if state is unchanged. Default: false.
+        emit_unchanged_zones: false,
+
+        // Emit output events on every read even if state is unchanged. Default: false.
+        emit_unchanged_outputs: false,
+
+        // Emit partition events on every read even if state is unchanged. Default: false.
+        emit_unchanged_partitions: false,
+
+        // Emit trouble events on every read even if state is unchanged. Default: false.
+        emit_unchanged_troubles: false,
+
+        // Emit system status events on every read even if state is unchanged. Default: false.
+        emit_unchanged_system_status: false,
     };
 
     println!("Config initialized successfully.");
@@ -252,7 +297,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - Auto Reconnect:      {}", config.auto_reconnect);
     println!("  - Temp Smart Blocking: {}", config.temp_blocking_enabled);
     println!("  - Violated Inversions: {:?}", config.io_violation_invert);
-    println!("  - Auto-Push Enabled:   {}\n", config.is_auto_read_enabled());
+    println!("  - Auto-Push Enabled:   {}", config.is_auto_read_enabled());
+    println!("  - Polling Temp Active: {}", config.polling_temperatures);
+    println!("  - Polling Temp Zones:  {:?}", config.polling_temperatures_zones);
+    println!("  - Polling Interval:    {} min", config.polling_temperatures_interval_minutes);
+    println!("  - Emit Unchanged Temp: {}", config.emit_unchanged_temperatures);
+    println!("  - Emit Unchanged Zones:{}", config.emit_unchanged_zones);
+    println!("  - Emit Unchanged Out:  {}\n", config.emit_unchanged_outputs);
 
     let satel = SatelIntegra::new(config);
 

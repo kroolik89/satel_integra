@@ -42,7 +42,7 @@
 //!   SATEL_PORT - TCP port (default: 7094)
 //!   SATEL_CODE - User access code (default: "1234")
 
-use satel_integra::{Config, ConnectionConfig, SatelCommand, SatelIntegra, TroubleType};
+use satel_integra::{Config, ConnectionConfig, SatelCommand, SatelIntegra};
 use std::env;
 
 #[tokio::main]
@@ -85,7 +85,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Troubles in Memory: {}", if status.troubles_memory { "YES (Stored in Memory)" } else { "No" });
     println!();
 
-    // Query active trouble parts 1..8
+    // 3.1 Direct 1:1 strongly-typed query for Part 1 (Main board, AC/DC, Expander power, ETHM)
+    println!("--- Direct 1:1 Typed Query: Troubles Part 1 (0x1B) ---");
+    let p1 = satel.get_troubles_part1().await?;
+    println!("Main Board Power & System Status:");
+    println!("  - AC Power Trouble:      {}", p1.main_board.ac_trouble);
+    println!("  - Battery Trouble:       {}", p1.main_board.battery_trouble);
+    println!("  - Battery Missing:       {}", p1.main_board.no_battery_present);
+    println!("  - OUT1..4 Overload:      {}", p1.main_board.out1_trouble || p1.main_board.out2_trouble || p1.main_board.out3_trouble || p1.main_board.out4_trouble);
+    println!("  - DT1/DT2 Data Bus:      {}", p1.main_board.dt1_trouble || p1.main_board.dt2_trouble);
+    println!("  - Telephone Line:        {}", p1.main_board.tel_line_no_signal || p1.main_board.tel_line_no_voltage);
+    println!("  - ETHM Ping / Server:    {}", p1.ethm_ptsa.ethm_ping_trouble || p1.ethm_ptsa.no_server_connection);
+    println!();
+
+    // Query all active trouble parts 1..8
     let active_trouble_cmds = [
         SatelCommand::TroublesPart1,
         SatelCommand::TroublesPart2,
@@ -97,12 +110,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         SatelCommand::TroublesPart8,
     ];
 
-    println!("Fetching active troubles (Parts 1..8)...");
+    println!("Fetching all trouble parts (Parts 1..8)...");
     for cmd in active_trouble_cmds {
-        satel.get_system_troubles(cmd).await?;
+        let _ = satel.get_troubles(cmd).await?;
     }
 
-    // Query trouble memory parts 1..8
+    // Query all trouble memory parts 1..8
     let memory_trouble_cmds = [
         SatelCommand::TroublesMemoryPart1,
         SatelCommand::TroublesMemoryPart2,
@@ -114,9 +127,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         SatelCommand::TroublesMemoryPart8,
     ];
 
-    println!("Fetching trouble memory (Parts 1..8)...");
+    println!("Fetching all trouble memory parts (Parts 1..8)...");
     for cmd in memory_trouble_cmds {
-        satel.get_system_troubles(cmd).await?;
+        let _ = satel.get_troubles(cmd).await?;
     }
     println!("All trouble parts updated in internal cache.\n");
 
@@ -158,7 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         part_idx as u8,
                         bit_idx as u16,
                     );
-                    let description = format_trouble_description(trouble_type);
+                    let description = trouble_type.to_description();
 
                     println!(
                         "P{}:Bit #{:03} | {: <10} | {: <10} | {: <50}",
@@ -189,34 +202,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Disconnected cleanly. Done.");
 
     Ok(())
-}
-
-/// Helper function to format `TroubleType` into human-readable diagnostic text
-fn format_trouble_description(trouble: TroubleType) -> String {
-    match trouble {
-        TroubleType::OutTrouble(id) => format!("Output #{:02} Trouble", id),
-        TroubleType::MainBoardAcLoss => "Main Board AC Power Loss (230V)".to_string(),
-        TroubleType::MainBoardBatteryLow => "Main Board Battery Voltage Low".to_string(),
-        TroubleType::MainBoardBatteryMissing => "Main Board Battery Missing / Disconnected".to_string(),
-        TroubleType::MainBoardOutOverload => "Main Board Power Supply / Output Overload".to_string(),
-        TroubleType::TelephoneLineTrouble => "Telephone Line Trouble (No dial tone / voltage)".to_string(),
-        TroubleType::RtcLoss => "RTC Real-Time Clock Loss (Time not set)".to_string(),
-        TroubleType::PrinterTrouble => "RS-232 / Printer Interface Error".to_string(),
-        TroubleType::MainBoardDataBusError => "Main Board Communication Keypad/Expander Bus Error".to_string(),
-        TroubleType::ExpanderAcLoss(id) => format!("Expander #{:02} AC Power Loss", id),
-        TroubleType::ExpanderBatteryLow(id) => format!("Expander #{:02} Battery Voltage Low", id),
-        TroubleType::ExpanderBatteryMissing(id) => format!("Expander #{:02} Battery Missing", id),
-        TroubleType::ExpanderOutOverload(id) => format!("Expander #{:02} Power Output Overload", id),
-        TroubleType::ExpanderDataBusError(id) => format!("Expander #{:02} Data Bus Communication Error", id),
-        TroubleType::EthmMonitoringStation1Error => "ETHM Monitoring Station 1 Connection Error".to_string(),
-        TroubleType::EthmMonitoringStation2Error => "ETHM Monitoring Station 2 Connection Error".to_string(),
-        TroubleType::EthmDloadxConnectionError => "ETHM DLOADX Remote Connection Error".to_string(),
-        TroubleType::EthmSatelServerConnectionError => "ETHM Satel Server Connection Error".to_string(),
-        TroubleType::IntGsmSignalLoss => "INT-GSM Cellular Signal Loss".to_string(),
-        TroubleType::GsmMonitoringStation1Error => "GSM Monitoring Station 1 Error".to_string(),
-        TroubleType::GsmMonitoringStation2Error => "GSM Monitoring Station 2 Error".to_string(),
-        TroubleType::ServiceAccessBlocked => "Service Access Blocked / Locked".to_string(),
-        TroubleType::ZoneTrouble(id) => format!("Zone (Input) #{:03} Technical Trouble", id),
-        TroubleType::GenericTrouble { part, bit } => format!("Diagnostic Trouble (Part {}, Bit {})", part + 1, bit),
-    }
 }

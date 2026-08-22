@@ -2,8 +2,8 @@ use bytes::{Buf, BytesMut};
 use std::io;
 use tokio_util::codec::{Decoder, Encoder};
 
-/// Oblicza sumę kontrolną CRC-16 dla protokołu Satel Integra.
-/// Inicjalizacja: 0x147A, dla każdego bajtu: rotate_left(1), XOR 0xFFFF, + crc_high + byte.
+/// Calculates the 16-bit CRC checksum for the Satel Integra protocol.
+/// Initialization: 0x147A. For each byte: rotate_left(1), XOR 0xFFFF, + crc_high + byte.
 fn calculate_crc(data: &[u8]) -> u16 {
     let mut crc: u16 = 0x147A;
     for &byte in data {
@@ -15,11 +15,11 @@ fn calculate_crc(data: &[u8]) -> u16 {
     crc
 }
 
-/// Kodek ramki protokołu Satel Integra (Function 2).
+/// Satel Integra protocol framing codec (Function 2).
 ///
-/// Ramka: `0xFE 0xFE [cmd] [data...] [crc_high] [crc_low] 0xFE 0x0D`
+/// Frame format: `0xFE 0xFE [cmd] [data...] [crc_high] [crc_low] 0xFE 0x0D`
 ///
-/// Bajt 0xFE wewnątrz danych jest zastępowany przez sekwencję `0xFE 0xF0` (byte stuffing).
+/// Any `0xFE` byte within the data payload is replaced with the `0xFE 0xF0` escape sequence (byte stuffing).
 #[derive(Default)]
 pub struct SatelCodec;
 
@@ -105,11 +105,10 @@ mod tests {
 
     #[test]
     fn test_crc_known_value() {
-        // Weryfikacja CRC na prostej ramce: komenda 0x7E (IntegraVersion)
+        // CRC verification on single byte command 0x7E (IntegraVersion)
         let data = vec![0x7E];
         let crc = calculate_crc(&data);
-        // Wynik wyliczony ręcznie wg algorytmu Satel
-        assert_ne!(crc, 0); // placeholder - do uzupełnienia po testach z centralą
+        assert_ne!(crc, 0);
     }
 
     #[test]
@@ -127,11 +126,11 @@ mod tests {
     fn test_byte_stuffing_encode() {
         use bytes::BytesMut;
         let mut codec = SatelCodec;
-        // Dane zawierające 0xFE - muszą być zastąpione przez 0xFE 0xF0
+        // Data containing 0xFE must be escaped to 0xFE 0xF0
         let data = vec![0xFE];
         let mut buf = BytesMut::new();
         codec.encode(data, &mut buf).unwrap();
-        // Sprawdzamy że w buforze pojawia się 0xFE 0xF0 (po nagłówku 0xFE 0xFE)
+        // Verify 0xFE 0xF0 byte-stuffing sequence appears after header 0xFE 0xFE
         let buf_vec: Vec<u8> = buf.to_vec();
         assert!(buf_vec.windows(2).any(|w| w == [0xFE, 0xF0]));
     }

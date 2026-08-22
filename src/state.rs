@@ -3,9 +3,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Instant, SystemTime};
 
-// --- Połączenie ---
+// --- Connection ---
 
-/// Stany połączenia z centralą.
+/// Connection state machine variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ConnectionState {
     Connected,
@@ -16,7 +16,7 @@ pub enum ConnectionState {
     Handshake,
 }
 
-/// Status połączenia zawierający stan i metadane.
+/// Connection status containing current state, retry count, and activity timestamps.
 #[derive(Debug, Clone, Copy)]
 pub struct ConnectionStatus {
     pub state: ConnectionState,
@@ -34,14 +34,14 @@ impl Default for ConnectionStatus {
     }
 }
 
-/// Typ używanego połączenia.
+/// Active transport connection type.
 #[derive(Debug, Clone)]
 pub enum ConnectionType {
     Tcp(String, u16),
     Uart(String),
 }
 
-/// Telemetria i stan dotyczący transmisji danych.
+/// Data transmission telemetry and connection health counters.
 #[derive(Debug)]
 pub struct ConnectionTelemetry {
     pub status: ConnectionStatus,
@@ -77,9 +77,9 @@ impl ConnectionTelemetry {
     }
 }
 
-// --- Wersje ---
+// --- Version info ---
 
-/// Informacje o wersji centrali Integra.
+/// Integra alarm panel version and model information.
 #[derive(Debug, Clone)]
 pub struct IntegraVersion {
     pub model: String,
@@ -90,14 +90,14 @@ pub struct IntegraVersion {
     pub read_at: DateTime<Local>,
 }
 
-/// Możliwości i funkcje modułu ETHM (z ramki 0x7C).
+/// Capabilities and features supported by the ETHM module (from 0x7C frame).
 #[derive(Debug, Clone, Copy)]
 pub struct EthmCapabilities {
-    /// Bit 0: Obsługa powiększonych ramek (32 bajty / 256 wejść/wyjść).
+    /// Bit 0: Support for expanded 32-byte frames (256 zones/outputs).
     pub support_32_byte_frames: bool,
-    /// Bit 1: Obsługa 8 grup awarii i 14-bajtowej maski 0x7F.
+    /// Bit 1: Support for 8 trouble groups and 14-byte 0x7F mask.
     pub support_8_troubles_groups: bool,
-    /// Bit 2: Obsługa rozszerzonych komend uzbrajania.
+    /// Bit 2: Support for extended arming commands.
     pub support_extended_arming_commands: bool,
     pub reserved_bit3: bool,
     pub reserved_bit4: bool,
@@ -106,7 +106,7 @@ pub struct EthmCapabilities {
     pub reserved_bit7: bool,
 }
 
-/// Informacje o wersji modułu ETHM (z ramki 0x7C).
+/// ETHM / UART communication module version information (from 0x7C frame).
 #[derive(Debug, Clone)]
 pub struct EthmVersion {
     pub version_raw: String,
@@ -114,35 +114,37 @@ pub struct EthmVersion {
     pub read_at: DateTime<Local>,
 }
 
-// --- Nazwy ---
+// --- Names ---
 
-/// Nazwa wejścia/wyjścia/strefy z datą odczytu.
+/// Name structure for zones, outputs, or partitions with retrieval timestamp.
 #[derive(Debug, Clone)]
 pub struct SatelName {
     pub name: String,
     pub read_at: DateTime<Local>,
 }
 
-/// Alias nazwy wejścia.
+/// Alias for zone name.
 pub type ZoneName = SatelName;
-/// Alias nazwy wyjścia.
+/// Alias for output name.
 pub type OutputName = SatelName;
-/// Alias nazwy strefy.
+/// Alias for partition name.
 pub type PartitionName = SatelName;
 
-// --- Temperatura ---
+// --- Temperature ---
 
-/// Status czujnika temperatury.
+/// Status and health state of a zone temperature probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TemperatureSensorStatus {
     #[default]
-    NoRead,             // Brak odczytu
-    Ok,                 // Sprawny
-    SensorMissing,      // Brak czujnika (Timeout)
-    CommunicationError, // Błąd komunikacji (0xFFFF)
+    NoRead,                 // Initial state before first query
+    Ok,                     // Healthy reading received
+    SensorMissing,          // Missing sensor or query timeout (during retries)
+    CommunicationError,     // Communication failure or 0xFFFF (during retries)
+    BlockSensorMissing,     // Blocked in RAM after exceeding timeout threshold
+    BlockCommunicationError,// Blocked in RAM after exceeding sensor error threshold
 }
 
-/// Temperatura z wejścia z datą odczytu.
+/// Zone temperature reading with retrieval timestamp.
 #[derive(Debug, Clone)]
 pub struct ZoneTemperature {
     pub zone_id: u16,
@@ -150,91 +152,91 @@ pub struct ZoneTemperature {
     pub read_at: DateTime<Local>,
 }
 
-// --- Dane pośrednie parserów ---
+// --- Parser intermediate raw data structures ---
 
-/// Dane o sabotażu wejść odczytane z centrali.
+/// Zone tamper data parsed from the panel.
 #[derive(Debug, Clone)]
 pub struct ZonesTamperData {
     pub states: Vec<bool>,
     pub read_at: DateTime<Local>,
 }
 
-/// Dane o alarmach wejść odczytane z centrali.
+/// Zone alarm data parsed from the panel.
 #[derive(Debug, Clone)]
 pub struct ZonesAlarmData {
     pub states: Vec<bool>,
     pub read_at: DateTime<Local>,
 }
 
-/// Dane o naruszeniach wejść odczytane z centrali.
+/// Zone violation data parsed from the panel.
 #[derive(Debug, Clone)]
 pub struct ZonesViolationData {
     pub states: Vec<bool>,
     pub read_at: DateTime<Local>,
 }
 
-/// Dane o alarmach sabotażowych wejść odczytane z centrali.
+/// Zone tamper alarm data parsed from the panel.
 #[derive(Debug, Clone)]
 pub struct ZonesTamperAlarmData {
     pub states: Vec<bool>,
     pub read_at: DateTime<Local>,
 }
 
-/// Dane o pamięci alarmów wejść odczytane z centrali.
+/// Zone alarm memory data parsed from the panel.
 #[derive(Debug, Clone)]
 pub struct ZonesAlarmMemoryData {
     pub states: Vec<bool>,
     pub read_at: DateTime<Local>,
 }
 
-/// Dane o pamięci alarmów sabotażowych wejść odczytane z centrali.
+/// Zone tamper alarm memory data parsed from the panel.
 #[derive(Debug, Clone)]
 pub struct ZonesTamperAlarmMemoryData {
     pub states: Vec<bool>,
     pub read_at: DateTime<Local>,
 }
 
-/// Dane o blokadach wejść odczytane z centrali.
+/// Zone bypass data parsed from the panel.
 #[derive(Debug, Clone)]
 pub struct ZonesBypassData {
     pub states: Vec<bool>,
     pub read_at: DateTime<Local>,
 }
 
-/// Dane o awariach "brak naruszenia" wejść odczytane z centrali.
+/// Zone 'no violation trouble' data parsed from the panel.
 #[derive(Debug, Clone)]
 pub struct ZonesNoViolationTroubleData {
     pub states: Vec<bool>,
     pub read_at: DateTime<Local>,
 }
 
-/// Dane o awariach "długie naruszenie" wejść odczytane z centrali.
+/// Zone 'long violation trouble' data parsed from the panel.
 #[derive(Debug, Clone)]
 pub struct ZonesLongViolationTroubleData {
     pub states: Vec<bool>,
     pub read_at: DateTime<Local>,
 }
 
-/// Dane o stanie stref odczytane z centrali.
+/// Partition states data parsed from the panel.
 #[derive(Debug, Clone)]
 pub struct PartitionsData {
     pub states: Vec<bool>,
     pub read_at: DateTime<Local>,
 }
 
-/// Alias dla zachowania kompatybilności.
+/// Alias for backwards compatibility.
 pub type PartitionsArmedData = PartitionsData;
 
-/// Dane o stanie wyjść odczytane z centrali.
+/// Output states data parsed from the panel.
 #[derive(Debug, Clone)]
 pub struct OutputsStateData {
     pub states: Vec<bool>,
     pub read_at: DateTime<Local>,
 }
 
-// --- Zagregowane struktury dla użytkownika ---
+// --- Aggregated public models ---
 
-/// Zagregowany status pojedynczego wejścia.
+/// Aggregated diagnostic status for a single zone.
 #[derive(Debug, Clone)]
 pub struct ZoneStatus {
     pub id: u16,
@@ -260,9 +262,9 @@ pub struct ZoneStatus {
     pub long_violation_trouble_at: DateTime<Local>,
 }
 
-// --- Struktury wejść, stref i wyjść ---
+// --- Zone, Partition, Output unified entities ---
 
-/// Ujednolicona struktura Wejścia (Zone).
+/// Unified Zone representation containing all cached states and telemetry.
 #[derive(Debug, Clone)]
 pub struct Zone {
     pub id: u16,
@@ -400,7 +402,7 @@ impl Partition {
     }
 }
 
-/// Ujednolicona struktura Wyjścia (Output).
+/// Unified Output structure.
 #[derive(Debug, Clone)]
 pub struct Output {
     pub id: u16,
@@ -430,38 +432,362 @@ impl Output {
     }
 }
 
-// --- Awarie i status systemu ---
+// --- 1:1 Trouble Data Structures (Parts 1..8) ---
 
-/// Typy awarii systemu Satel Integra.
+/// Main control panel board troubles (from Part 1 frame).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MainBoardTroubles {
+    pub out1_trouble: bool,
+    pub out2_trouble: bool,
+    pub out3_trouble: bool,
+    pub out4_trouble: bool,
+    pub kpd_power_trouble: bool,
+    pub ex1_ex2_power_trouble: bool,
+    pub battery_trouble: bool,
+    pub ac_trouble: bool,
+    pub dt1_trouble: bool,
+    pub dt2_trouble: bool,
+    pub dtm_trouble: bool,
+    pub rtc_trouble: bool,
+    pub no_dtr_signal: bool,
+    pub no_battery_present: bool,
+    pub external_modem_init_trouble: bool,
+    pub external_modem_cmd_trouble: bool,
+    pub tel_line_no_voltage: bool,
+    pub tel_line_bad_signal: bool,
+    pub tel_line_no_signal: bool,
+    pub monitoring_station_1_trouble: bool,
+    pub monitoring_station_2_trouble: bool,
+    pub eeprom_rtc_trouble: bool,
+    pub ram_trouble: bool,
+    pub main_panel_restart: bool,
+}
+
+/// ETHM-1 / INT-GSM / PTSA communication module troubles (from Part 1 frame).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EthmPtsaTroubles {
+    pub ethm_ping_trouble: bool,
+    pub server_id_error: bool,
+    pub no_server_connection: bool,
+    pub no_ethm_mon_station_1: bool,
+    pub no_ethm_mon_station_2: bool,
+    pub no_gprs_mon_station_1: bool,
+    pub no_gprs_mon_station_2: bool,
+    pub time_server_trouble: bool,
+    pub gsm_init_error: bool,
+    pub ip_mon_station_1_trouble: bool,
+    pub ip_mon_station_2_trouble: bool,
+}
+
+/// Parsed trouble frame for Part 1 (0x1B / 0x20 - 47 bytes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TroublesPart1Data {
+    pub is_memory: bool,
+    pub technical_zones: Vec<bool>,
+    pub expanders_ac: Vec<bool>,
+    pub expanders_battery: Vec<bool>,
+    pub expanders_no_battery: Vec<bool>,
+    pub main_board: MainBoardTroubles,
+    pub ethm_ptsa: EthmPtsaTroubles,
+    pub read_at: DateTime<Local>,
+}
+
+/// Parsed trouble frame for Part 2 (0x1C / 0x21 - 26 bytes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TroublesPart2Data {
+    pub is_memory: bool,
+    pub card_readers_head_a_or_synchro: Vec<bool>,
+    pub card_readers_head_b_or_charging: Vec<bool>,
+    pub expanders_supply_overload: Vec<bool>,
+    pub acu_jammed_or_short_circuit: Vec<bool>,
+    pub read_at: DateTime<Local>,
+}
+
+/// Parsed trouble frame for Part 3 (0x1D / 0x22 - 60 bytes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TroublesPart3Data {
+    pub is_memory: bool,
+    pub acu_jam_levels: Vec<u8>,
+    pub wireless_devices_low_battery: Vec<bool>,
+    pub wireless_devices_no_comm: Vec<bool>,
+    pub wireless_outputs_no_comm: Vec<bool>,
+    pub read_at: DateTime<Local>,
+}
+
+/// Parsed trouble frame for Part 4 (0x1E / 0x23 - 30 bytes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TroublesPart4Data {
+    pub is_memory: bool,
+    pub expanders_no_comm: Vec<bool>,
+    pub expanders_substituted: Vec<bool>,
+    pub keypads_no_comm: Vec<bool>,
+    pub keypads_substituted: Vec<bool>,
+    pub ethm_no_lan_or_intrs_no_dsr: Vec<bool>,
+    pub expanders_tamper: Vec<bool>,
+    pub keypads_tamper: Vec<bool>,
+    pub keypad_init_errors: Vec<bool>,
+    pub auxiliary_stm_troubles: u8,
+    pub read_at: DateTime<Local>,
+}
+
+/// Parsed trouble frame for Part 5 (0x1F / 0x24 - 31 bytes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TroublesPart5Data {
+    pub is_memory: bool,
+    pub masters_key_fobs_low_battery: Vec<bool>,
+    pub users_key_fobs_low_battery: Vec<bool>,
+    pub read_at: DateTime<Local>,
+}
+
+/// Parsed trouble frame for Part 6 (0x2C / 0x2E - 45 bytes - Integra 256).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TroublesPart6Data {
+    pub is_memory: bool,
+    pub wireless_devices_low_battery: Vec<bool>,
+    pub wireless_devices_no_comm: Vec<bool>,
+    pub wireless_outputs_no_comm: Vec<bool>,
+    pub read_at: DateTime<Local>,
+}
+
+/// Parsed trouble frame for Part 7 (0x2D / 0x2F - 47 bytes - Integra 256).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TroublesPart7Data {
+    pub is_memory: bool,
+    pub technical_zones: Vec<bool>,
+    pub technical_zones_memory: Vec<bool>,
+    pub acu_jam_levels: Vec<u8>,
+    pub read_at: DateTime<Local>,
+}
+
+/// Detailed troubles for an individual INT-GSM module (from Part 8 frame).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GsmModuleTroubles {
+    pub module_address: u8,
+    pub no_ethm_mon_station_1: bool,
+    pub no_ethm_mon_station_2: bool,
+    pub no_gprs_sim1_mon_station_1: bool,
+    pub no_gprs_sim1_mon_station_2: bool,
+    pub no_gprs_sim2_mon_station_1: bool,
+    pub no_gprs_sim2_mon_station_2: bool,
+    pub no_sms_sim1_mon_station_1: bool,
+    pub no_sms_sim1_mon_station_2: bool,
+    pub no_sms_sim2_mon_station_1: bool,
+    pub no_sms_sim2_mon_station_2: bool,
+    pub wrong_sim1_pin: bool,
+    pub wrong_sim2_pin: bool,
+    pub sim1_logging_error: bool,
+    pub sim2_logging_error: bool,
+    pub sim1_credit_low: bool,
+    pub sim2_credit_low: bool,
+    pub sim1_sms_error: bool,
+    pub sim2_sms_error: bool,
+    pub gsm_jamming: bool,
+    pub settings_crc_error: bool,
+    pub missing_module: bool,
+    pub changed_module: bool,
+    pub satel_server_conn_error: bool,
+    pub mail_server_conn_error: bool,
+    pub ntp_server_conn_error: bool,
+    pub sim1_cme_error: u16,
+    pub sim2_cme_error: u16,
+}
+
+/// Parsed trouble frame for Part 8 (0x30 / 0x31 - 64 bytes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TroublesPart8Data {
+    pub is_memory: bool,
+    pub gsm_modules: Vec<GsmModuleTroubles>,
+    pub read_at: DateTime<Local>,
+}
+
+/// Universal enum representing any decoded trouble command frame (Parts 1..8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TroublesData {
+    Part1(TroublesPart1Data),
+    Part2(TroublesPart2Data),
+    Part3(TroublesPart3Data),
+    Part4(TroublesPart4Data),
+    Part5(TroublesPart5Data),
+    Part6(TroublesPart6Data),
+    Part7(TroublesPart7Data),
+    Part8(TroublesPart8Data),
+}
+
+/// System trouble variants for Satel Integra panels (matching 100% of protocol spec).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TroubleType {
-    OutTrouble(u8),
+    // --- Main panel board ---
     MainBoardAcLoss,
     MainBoardBatteryLow,
     MainBoardBatteryMissing,
-    MainBoardOutOverload,
-    TelephoneLineTrouble,
+    MainBoardOutOverload(u8),
+    MainBoardKpdPowerOverload,
+    MainBoardExPowerOverload,
+    MainBoardDataBusDt1,
+    MainBoardDataBusDt2,
+    MainBoardDataBusDtm,
     RtcLoss,
-    PrinterTrouble,
-    MainBoardDataBusError,
+    NoDtrSignal,
+    ExternalModemInitTrouble,
+    ExternalModemCmdTrouble,
+    TelephoneLineNoVoltage,
+    TelephoneLineBadSignal,
+    TelephoneLineNoSignal,
+    MonitoringStation1Trouble,
+    MonitoringStation2Trouble,
+    EepromRtcTrouble,
+    RamMemoryError,
+    MainPanelRestartMemory,
+
+    // --- Technical zones ---
+    TechnicalZoneTrouble(u16),
+
+    // --- Expanders (1..64) ---
     ExpanderAcLoss(u8),
     ExpanderBatteryLow(u8),
     ExpanderBatteryMissing(u8),
-    ExpanderOutOverload(u8),
-    ExpanderDataBusError(u8),
+    ExpanderSupplyOverload(u8),
+    ExpanderNoComm(u8),
+    ExpanderSubstituted(u8),
+    ExpanderTamper(u8),
+    ExpanderCardReaderHeadA(u8),
+    ExpanderCardReaderHeadB(u8),
+    ExpanderAcuJammedOrShortCircuit(u8),
+
+    // --- Keypads (1..8) ---
+    KeypadNoComm(u8),
+    KeypadSubstituted(u8),
+    KeypadTamper(u8),
+    KeypadInitError(u8),
+
+    // --- Communication modules (ETHM-1 / INT-GSM / PTSA) ---
+    EthmNoLanCable(u8),
+    EthmPingTrouble,
+    EthmServerIdError,
+    EthmSatelServerConnectionError,
     EthmMonitoringStation1Error,
     EthmMonitoringStation2Error,
-    EthmDloadxConnectionError,
-    EthmSatelServerConnectionError,
+    GprsMonitoringStation1Error,
+    GprsMonitoringStation2Error,
+    IpMonitoringStation1Trouble,
+    IpMonitoringStation2Trouble,
+    TimeServerTrouble,
+    GsmInitError,
     IntGsmSignalLoss,
-    GsmMonitoringStation1Error,
-    GsmMonitoringStation2Error,
-    ServiceAccessBlocked,
-    ZoneTrouble(u16),
-    GenericTrouble { part: u8, bit: u8 },
+    GsmJamming(u8),
+    GsmSimPinError { module: u8, sim: u8 },
+    GsmSimLoggingError { module: u8, sim: u8 },
+    GsmSimCreditLow { module: u8, sim: u8 },
+    GsmSimSmsError { module: u8, sim: u8 },
+    GsmSettingsCrcError(u8),
+    GsmModuleMissing(u8),
+    GsmModuleChanged(u8),
+    GsmServerConnError(u8),
+    GsmMailServerConnError(u8),
+    GsmNtpServerConnError(u8),
+    GsmCmeError { module: u8, sim: u8, code: u16 },
+    GsmTrouble { module_address: u8, desc: &'static str },
+
+    // --- Wireless devices (ABAX / ABAX 2) ---
+    WirelessDeviceLowBattery { zone_id: u16 },
+    WirelessDeviceNoComm { zone_id: u16 },
+    WirelessOutputNoComm { output_id: u16 },
+    AcuModuleJamLevel(u8),
+
+    // --- Key fobs ---
+    MasterKeyFobLowBattery(u8),
+    UserKeyFobLowBattery { user_id: u16 },
+
+    // --- Other ---
+    AuxiliaryStmTroubles,
+    GenericTrouble { part: u8, bit: u16 },
 }
 
-/// Ogólny status systemu (z ramki 0x1A).
+impl TroubleType {
+    pub fn to_description(&self) -> String {
+        match self {
+            Self::MainBoardAcLoss => "Main Board: AC Power Loss (230V)".to_string(),
+            Self::MainBoardBatteryLow => "Main Board: Battery Low Voltage".to_string(),
+            Self::MainBoardBatteryMissing => "Main Board: Battery Missing / Disconnected".to_string(),
+            Self::MainBoardOutOverload(out) => format!("Main Board: Supply Output #{} Overload", out),
+            Self::MainBoardKpdPowerOverload => "Main Board: Keypad Power Supply (+KPD) Overload".to_string(),
+            Self::MainBoardExPowerOverload => "Main Board: Expander Power Supply (+EX1/+EX2) Overload".to_string(),
+            Self::MainBoardDataBusDt1 => "Main Board: Data Bus DT1 Communication Error".to_string(),
+            Self::MainBoardDataBusDt2 => "Main Board: Data Bus DT2 Communication Error".to_string(),
+            Self::MainBoardDataBusDtm => "Main Board: Data Bus DTM Communication Error".to_string(),
+            Self::RtcLoss => "Main Board: Real-Time Clock (RTC) Loss / Not Set".to_string(),
+            Self::NoDtrSignal => "Main Board: No DTR Signal on RS-232 Port".to_string(),
+            Self::ExternalModemInitTrouble => "Main Board: External Modem Initialization Error".to_string(),
+            Self::ExternalModemCmdTrouble => "Main Board: External Modem Command Error".to_string(),
+            Self::TelephoneLineNoVoltage => "Telephone Line: No Voltage".to_string(),
+            Self::TelephoneLineBadSignal => "Telephone Line: Bad Signal".to_string(),
+            Self::TelephoneLineNoSignal => "Telephone Line: No Dial Tone".to_string(),
+            Self::MonitoringStation1Trouble => "Monitoring: Station 1 Transmission Fault".to_string(),
+            Self::MonitoringStation2Trouble => "Monitoring: Station 2 Transmission Fault".to_string(),
+            Self::EepromRtcTrouble => "Main Board: EEPROM / RTC Access Trouble".to_string(),
+            Self::RamMemoryError => "Main Board: RAM Memory Error".to_string(),
+            Self::MainPanelRestartMemory => "Main Board: Panel Restart Latched in Memory".to_string(),
+
+            Self::TechnicalZoneTrouble(zone) => format!("Technical Zone #{:03}: Trouble Detected", zone),
+
+            Self::ExpanderAcLoss(exp) => format!("Expander #{:02}: AC Power Loss", exp),
+            Self::ExpanderBatteryLow(exp) => format!("Expander #{:02}: Battery Low Voltage", exp),
+            Self::ExpanderBatteryMissing(exp) => format!("Expander #{:02}: Battery Missing", exp),
+            Self::ExpanderSupplyOverload(exp) => format!("Expander #{:02}: Power Supply Overload", exp),
+            Self::ExpanderNoComm(exp) => format!("Expander #{:02}: No Communication", exp),
+            Self::ExpanderSubstituted(exp) => format!("Expander #{:02}: Substituted / Unknown Hardware", exp),
+            Self::ExpanderTamper(exp) => format!("Expander #{:02}: Tamper / Sabotage", exp),
+            Self::ExpanderCardReaderHeadA(exp) => format!("Expander #{:02}: Card Reader Head A / Synchro Trouble", exp),
+            Self::ExpanderCardReaderHeadB(exp) => format!("Expander #{:02}: Card Reader Head B / Charging Trouble", exp),
+            Self::ExpanderAcuJammedOrShortCircuit(exp) => format!("Expander #{:02}: Jammed / Addressable Loop Short Circuit", exp),
+
+            Self::KeypadNoComm(kpd) => format!("Keypad #{:02}: No Communication", kpd),
+            Self::KeypadSubstituted(kpd) => format!("Keypad #{:02}: Substituted Keypad", kpd),
+            Self::KeypadTamper(kpd) => format!("Keypad #{:02}: Tamper / Sabotage", kpd),
+            Self::KeypadInitError(kpd) => format!("Keypad #{:02}: Initialization Error", kpd),
+
+            Self::EthmNoLanCable(mod_id) => format!("ETHM-1 #{:02}: Ethernet LAN Cable Unplugged", mod_id),
+            Self::EthmPingTrouble => "ETHM-1: Ping Network Test Failed".to_string(),
+            Self::EthmServerIdError => "ETHM-1: SATEL Server MAC/ID Verification Error".to_string(),
+            Self::EthmSatelServerConnectionError => "ETHM-1: No Connection to SATEL Server".to_string(),
+            Self::EthmMonitoringStation1Error => "ETHM-1: Monitoring Station 1 Connection Error".to_string(),
+            Self::EthmMonitoringStation2Error => "ETHM-1: Monitoring Station 2 Connection Error".to_string(),
+            Self::GprsMonitoringStation1Error => "INT-GSM: GPRS Monitoring Station 1 Error".to_string(),
+            Self::GprsMonitoringStation2Error => "INT-GSM: GPRS Monitoring Station 2 Error".to_string(),
+            Self::IpMonitoringStation1Trouble => "IP Monitoring: Station 1 Communication Trouble".to_string(),
+            Self::IpMonitoringStation2Trouble => "IP Monitoring: Station 2 Communication Trouble".to_string(),
+            Self::TimeServerTrouble => "Network: NTP Time Synchronization Server Error".to_string(),
+            Self::GsmInitError => "INT-GSM: GSM Module Initialization Error".to_string(),
+            Self::IntGsmSignalLoss => "INT-GSM: Cellular Signal Lost".to_string(),
+            Self::GsmJamming(addr) => format!("INT-GSM (Addr {}): Cellular Jamming Detected", addr),
+            Self::GsmSimPinError { module, sim } => format!("INT-GSM (Addr {}): SIM{} Wrong PIN", module, sim),
+            Self::GsmSimLoggingError { module, sim } => format!("INT-GSM (Addr {}): SIM{} Network Registration Error", module, sim),
+            Self::GsmSimCreditLow { module, sim } => format!("INT-GSM (Addr {}): SIM{} Account Credit Low", module, sim),
+            Self::GsmSimSmsError { module, sim } => format!("INT-GSM (Addr {}): SIM{} SMS Sending Error", module, sim),
+            Self::GsmSettingsCrcError(addr) => format!("INT-GSM (Addr {}): Settings CRC Checksum Error", addr),
+            Self::GsmModuleMissing(addr) => format!("INT-GSM (Addr {}): Module Missing", addr),
+            Self::GsmModuleChanged(addr) => format!("INT-GSM (Addr {}): Module Changed", addr),
+            Self::GsmServerConnError(addr) => format!("INT-GSM (Addr {}): Server Connection Error", addr),
+            Self::GsmMailServerConnError(addr) => format!("INT-GSM (Addr {}): Mail Server Error", addr),
+            Self::GsmNtpServerConnError(addr) => format!("INT-GSM (Addr {}): NTP Server Error", addr),
+            Self::GsmCmeError { module, sim, code } => format!("INT-GSM (Addr {}): SIM{} Modem CME Error #{:04X}", module, sim, code),
+            Self::GsmTrouble { module_address, desc } => format!("INT-GSM (Addr {}): {}", module_address, desc),
+
+            Self::WirelessDeviceLowBattery { zone_id } => format!("Wireless Sensor (Zone #{:03}): Low Battery", zone_id),
+            Self::WirelessDeviceNoComm { zone_id } => format!("Wireless Sensor (Zone #{:03}): No Radio Communication", zone_id),
+            Self::WirelessOutputNoComm { output_id } => format!("Wireless Output #{:03}: No Radio Communication", output_id),
+            Self::AcuModuleJamLevel(acu) => format!("ACU-100/220 Module #{:02}: Radio Jamming Detected", acu),
+
+            Self::MasterKeyFobLowBattery(master) => format!("Master User #{:02} Key Fob: Low Battery", master),
+            Self::UserKeyFobLowBattery { user_id } => format!("User #{:03} Key Fob: Low Battery", user_id),
+
+            Self::AuxiliaryStmTroubles => "Auxiliary Microprocessor (STM) Trouble".to_string(),
+            Self::GenericTrouble { part, bit } => format!("Diagnostic Trouble (Part {}, Bit #{:03})", part + 1, bit),
+        }
+    }
+}
+
+/// General system status flags (from 0x1A frame).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SystemStatus {
     pub service_mode: bool,
@@ -470,36 +796,36 @@ pub struct SystemStatus {
     pub rtc: DateTime<Local>,
 }
 
-// --- Autoodczyt ---
+// --- Auto-read (Push notifications) ---
 
-/// Stan poszczególnego elementu autoodczytu.
+/// State of an individual auto-read category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoReadItemState {
-    /// Aktywny i działający.
+    /// Active and operational.
     Active,
-    /// Nieżądany w konfiguracji.
+    /// Not requested in configuration.
     NotRequested,
-    /// Nieobsługiwany przez sprzęt (wymagane 14 bajtów, dostępne 12).
+    /// Unsupported by hardware (requires 14-byte support, panel provides 12).
     UnsupportedByHardware,
-    /// Odrzucony przez centralę (błąd 0xEF).
+    /// Rejected by panel (error code 0xEF).
     RejectedByPanel(u8),
 }
 
 impl AutoReadItemState {
     pub fn to_description(&self) -> String {
         match self {
-            Self::Active => "Aktywny".to_string(),
-            Self::NotRequested => "Nie żądano".to_string(),
-            Self::UnsupportedByHardware => "Brak wsparcia w ETHM (wymagane 14B)".to_string(),
+            Self::Active => "Active".to_string(),
+            Self::NotRequested => "Not requested".to_string(),
+            Self::UnsupportedByHardware => "Unsupported by ETHM hardware (requires 14B mask)".to_string(),
             Self::RejectedByPanel(code) => {
                 let desc = match code {
-                    0x01 => "Błąd: Kod użytkownika nieznany",
-                    0x02 => "Błąd: Brak dostępu",
-                    0x03 => "Błąd: Użytkownik nie istnieje",
-                    0x04 => "Błąd: Użytkownik już istnieje",
-                    0x05 => "Błąd: Błędny kod",
-                    0x08 => "Błąd: Inny błąd centrali",
-                    _ => "Błąd: Odrzucono (0xEF)",
+                    0x01 => "Error: Unknown user code",
+                    0x02 => "Error: No access rights",
+                    0x03 => "Error: User does not exist",
+                    0x04 => "Error: User already exists",
+                    0x05 => "Error: Wrong user code",
+                    0x08 => "Error: Other panel error",
+                    _ => "Error: Rejected (0xEF)",
                 };
                 format!("{} ({:02X})", desc, code)
             }
@@ -507,14 +833,14 @@ impl AutoReadItemState {
     }
 }
 
-/// Status konkretnej kategorii autoodczytu.
+/// Status of a specific auto-read category.
 #[derive(Debug, Clone)]
 pub struct AutoReadItemStatus {
     pub name: String,
     pub state: AutoReadItemState,
 }
 
-/// Raport zbiorczy z konfiguracji autoodczytu.
+/// Report summarizing auto-read configuration results.
 #[derive(Debug, Clone)]
 pub struct AutoReadReport {
     pub items: Vec<AutoReadItemStatus>,
@@ -522,9 +848,9 @@ pub struct AutoReadReport {
     pub total_requested: usize,
 }
 
-// --- Główny cache stanu ---
+// --- Shared state cache ---
 
-/// Struktura przechowująca współdzielony stan połączenia (zunifikowany cache).
+/// Thread-safe in-memory cache of the Integra panel state.
 #[derive(Debug)]
 pub struct SatelState {
     pub connection_type: Option<ConnectionType>,
@@ -574,5 +900,5 @@ impl SatelState {
     }
 }
 
-/// Wątkobezpieczny uchwyt do stanu `SatelState`.
+/// Thread-safe shared handle to `SatelState`.
 pub type SatelStateHandle = Arc<RwLock<SatelState>>;

@@ -2,8 +2,8 @@ use crate::error::SatelError;
 use crate::state::SatelName;
 use chrono::Local;
 
-/// Przetwarza całą ramkę odpowiedzi na komendę 0xEE (Read device name).
-/// Zwraca krotkę (Numer urządzenia, Dane nazwy).
+/// Parses the complete response frame for command 0xEE (Read device name).
+/// Returns a tuple `(Device ID, SatelName)`.
 fn process_device_name(frame: &[u8], expected_type: u8) -> Result<(u16, SatelName), SatelError> {
     if frame.is_empty() || frame[0] != 0xEE {
         return Err(SatelError::InvalidFrame);
@@ -39,17 +39,17 @@ fn process_device_name(frame: &[u8], expected_type: u8) -> Result<(u16, SatelNam
     ))
 }
 
-/// Przetwarza odpowiedź dla stref/partycji (typ 0).
+/// Parses the name response for partitions (device type 0).
 pub fn process_partition_name(data: &[u8]) -> Result<(u16, SatelName), SatelError> {
     process_device_name(data, 0)
 }
 
-/// Przetwarza odpowiedź dla wejść (typ 1).
+/// Parses the name response for zones (device type 1).
 pub fn process_zone_name(data: &[u8]) -> Result<(u16, SatelName), SatelError> {
     process_device_name(data, 1)
 }
 
-/// Przetwarza odpowiedź dla wyjść (typ 4).
+/// Parses the name response for outputs (device type 4).
 pub fn process_output_name(data: &[u8]) -> Result<(u16, SatelName), SatelError> {
     process_device_name(data, 4)
 }

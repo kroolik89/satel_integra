@@ -2,11 +2,11 @@ use crate::error::SatelError;
 use crate::state::OutputsStateData;
 use chrono::Local;
 
-/// Przetwarza całą ramkę odpowiedzi na komendę 0x17 (Outputs state).
+/// Parses the complete response frame for command 0x17 (Outputs state).
 pub fn process_outputs_state(frame: &[u8]) -> Result<OutputsStateData, SatelError> {
     if frame.is_empty() || frame[0] != 0x17 {
         tracing::error!(
-            "Nieprawidłowy kod komendy w ramce stanu wyjść: {:02X?}",
+            "Invalid command byte in output state frame: {:02X?}",
             frame.first()
         );
         return Err(SatelError::InvalidFrame);
@@ -14,7 +14,7 @@ pub fn process_outputs_state(frame: &[u8]) -> Result<OutputsStateData, SatelErro
 
     let data = &frame[1..];
     if data.len() < 16 {
-        tracing::error!("Dane stanu wyjść zbyt krótkie: {} bajtów", data.len());
+        tracing::error!("Output state frame too short: {} bytes", data.len());
         return Err(SatelError::InvalidFrame);
     }
 

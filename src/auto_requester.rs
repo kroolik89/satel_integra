@@ -13,8 +13,8 @@ use crate::parsers::{
 use crate::worker::StateWorkerMessage;
 use tokio::sync::mpsc;
 
-/// SatelAutoRequester odpowiada za przetwarzanie danych Push
-/// oraz utrzymywanie aktualności stanu cache.
+/// `SatelAutoRequester` handles incoming Push notification frames
+/// and updates the shared in-memory state cache.
 pub(crate) struct SatelAutoRequester {
     pub integra: SatelIntegra,
     pub rx: mpsc::Receiver<StateWorkerMessage>,
@@ -22,7 +22,7 @@ pub(crate) struct SatelAutoRequester {
 
 impl SatelAutoRequester {
     pub async fn run(&mut self) {
-        tracing::info!("SatelAutoRequester uruchomiony");
+        tracing::info!("SatelAutoRequester started");
 
         loop {
             tokio::select! {
@@ -33,7 +33,7 @@ impl SatelAutoRequester {
                                 self.handle_auto_frame(&frame);
                             }
                             StateWorkerMessage::StatusChanged(state) => {
-                                tracing::info!("SatelAutoRequester: Zmiana stanu połączenia -> {:?}", state);
+                                tracing::info!("SatelAutoRequester: Connection state transition -> {:?}", state);
                                 let _ = self.integra.event_tx.send(SatelEvent::ConnectionChanged(state));
                             }
                             StateWorkerMessage::IntegraVersion(v) => {
@@ -52,7 +52,7 @@ impl SatelAutoRequester {
                 }
             }
         }
-        tracing::info!("SatelAutoRequester zatrzymany");
+        tracing::info!("SatelAutoRequester stopped");
     }
 
     fn handle_auto_frame(&mut self, frame: &[u8]) {

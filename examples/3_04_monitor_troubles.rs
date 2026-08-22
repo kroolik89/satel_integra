@@ -131,12 +131,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = satel.get_system_status().await;
 
         for cmd in &active_trouble_cmds {
-            let _ = satel.get_system_troubles(*cmd).await;
+            let _ = satel.get_troubles(*cmd).await;
             sleep(Duration::from_millis(50)).await;
         }
 
         for cmd in &memory_trouble_cmds {
-            let _ = satel.get_system_troubles(*cmd).await;
+            let _ = satel.get_troubles(*cmd).await;
             sleep(Duration::from_millis(50)).await;
         }
 

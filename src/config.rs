@@ -1,157 +1,202 @@
 use serde::Deserialize;
 
-/// Główna, nadrzędna struktura konfiguracyjna.
+/// Main client configuration structure.
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
-    /// Konfiguracja metody połączenia (TCP lub UART).
+    /// Connection transport configuration (TCP/IP or UART/RS-232).
     pub connection: ConnectionConfig,
 
-    /// Czas oczekiwania na odczyt danych w milisekundach.
+    /// Network / stream read timeout in milliseconds.
     #[serde(default = "default_read_timeout_ms")]
     pub read_timeout_ms: u64,
 
-    /// Czas oczekiwania na zapis danych w milisekundach.
+    /// Network / stream write timeout in milliseconds.
     #[serde(default = "default_write_timeout_ms")]
     pub write_timeout_ms: u64,
 
-    /// Czas oczekiwania na odczyt temperatury w milisekundach.
+    /// Zone temperature sensor query timeout in milliseconds.
     #[serde(default = "default_temp_read_timeout_ms")]
     pub temp_read_timeout_ms: u64,
 
-    /// Maksymalny czas oczekiwania wiadomości w buforze kolejki w milisekundach.
+    /// Maximum message lifetime in the buffer queue before expiration (ms).
     #[serde(default = "default_buffer_timeout_ms")]
     pub buffer_timeout_ms: u64,
 
-    /// Opcjonalny kod użytkownika potrzebny do niektórych operacji.
+    /// Optional user access code required for control commands.
     pub user_code: Option<String>,
 
-    /// Czy włączyć automatyczne ponowne połączenie.
+    /// Whether to automatically reconnect when the connection drops.
     #[serde(default = "default_auto_reconnect")]
     pub auto_reconnect: bool,
 
-    /// Czy blokować odczyty z wadliwych czujników temperatury.
+    /// Whether smart blocking for faulty temperature sensors is enabled.
     #[serde(default = "default_temp_blocking_enabled")]
     pub temp_blocking_enabled: bool,
 
-    /// Maksymalna liczba błędów braku czujnika / timeout przed zablokowaniem.
+    /// Maximum consecutive timeout / missing errors before blocking a temperature sensor.
     #[serde(default = "default_temp_max_timeout_errors")]
     pub temp_max_timeout_errors: u32,
 
-    /// Maksymalna liczba błędów czujnika raportowanych przez Satel przed zablokowaniem.
+    /// Maximum consecutive sensor errors (0xFFFF) before blocking a temperature sensor.
     #[serde(default = "default_temp_max_sensor_errors")]
     pub temp_max_sensor_errors: u32,
 
-    /// Lista ID wejść (1-256), których stan sabotażu ma być odwrócony.
+    /// List of zone IDs (1..256) whose tamper state should be logically inverted.
     #[serde(default)]
     pub io_tamper_invert: Vec<u16>,
 
-    /// Lista ID wejść (1-256), których stan alarmowy ma być odwrócony.
+    /// List of zone IDs (1..256) whose alarm state should be logically inverted.
     #[serde(default)]
     pub io_alarm_invert: Vec<u16>,
 
-    /// Lista ID wejść (1-256), których stan naruszenia (violation) ma być odwrócony.
+    /// List of zone IDs (1..256) whose violation state should be logically inverted.
     #[serde(default)]
     pub io_violation_invert: Vec<u16>,
 
-    /// Lista ID wejść (1-256), których stan alarmu sabotażowego ma być odwrócony.
+    /// List of zone IDs (1..256) whose tamper alarm state should be logically inverted.
     #[serde(default)]
     pub io_tamper_alarm_invert: Vec<u16>,
 
-    /// Lista ID wejść (1-256), których stan pamięci alarmu ma być odwrócony.
+    /// List of zone IDs (1..256) whose alarm memory state should be logically inverted.
     #[serde(default)]
     pub io_alarm_memory_invert: Vec<u16>,
 
-    /// Lista ID wejść (1-256), których stan pamięci alarmu sabotażowego ma być odwrócony.
+    /// List of zone IDs (1..256) whose tamper alarm memory state should be logically inverted.
     #[serde(default)]
     pub io_tamper_alarm_memory_invert: Vec<u16>,
 
-    /// Lista ID wejść (1-256), których stan blokady (bypass) ma być odwrócony.
+    /// List of zone IDs (1..256) whose bypass state should be logically inverted.
     #[serde(default)]
     pub io_bypass_invert: Vec<u16>,
 
-    /// Lista ID wejść (1-256), których stan awarii "brak naruszenia" ma być odwrócony.
+    /// List of zone IDs (1..256) whose 'no violation trouble' state should be logically inverted.
     #[serde(default)]
     pub io_no_violation_trouble_invert: Vec<u16>,
 
-    /// Lista ID wejść (1-256), których stan awarii "długie naruszenie" ma być odwrócony.
+    /// List of zone IDs (1..256) whose 'long violation trouble' state should be logically inverted.
     #[serde(default)]
     pub io_long_violation_trouble_invert: Vec<u16>,
 
-    /// Czy automatycznie odpytywać o stan naruszeń wejść (0x00).
+    /// Whether to auto-read zone violations (0x00) via push notifications.
     #[serde(default = "default_auto_read")]
     pub auto_read_zones_violation: bool,
 
-    /// Czy automatycznie odpytywać o stan sabotaży wejść (0x01).
+    /// Whether to auto-read zone tampers (0x01) via push notifications.
     #[serde(default = "default_auto_read")]
     pub auto_read_zones_tamper: bool,
 
-    /// Czy automatycznie odpytywać o stan alarmów wejść (0x02).
+    /// Whether to auto-read zone alarms (0x02) via push notifications.
     #[serde(default = "default_auto_read")]
     pub auto_read_zones_alarm: bool,
 
-    /// Czy automatycznie odpytywać o stan alarmów sabotażowych wejść (0x03).
+    /// Whether to auto-read zone tamper alarms (0x03) via push notifications.
     #[serde(default = "default_auto_read")]
     pub auto_read_zones_tamper_alarm: bool,
 
-    /// Czy automatycznie odpytywać o stan pamięci alarmów wejść (0x04).
+    /// Whether to auto-read zone alarm memory (0x04) via push notifications.
     #[serde(default = "default_auto_read")]
     pub auto_read_zones_alarm_memory: bool,
 
-    /// Czy automatycznie odpytywać o stan pamięci alarmów sabotażowych wejść (0x05).
+    /// Whether to auto-read zone tamper alarm memory (0x05) via push notifications.
     #[serde(default = "default_auto_read")]
     pub auto_read_zones_tamper_alarm_memory: bool,
 
-    /// Czy automatycznie odpytywać o stan blokad wejść (0x06).
+    /// Whether to auto-read zone bypasses (0x06) via push notifications.
     #[serde(default = "default_auto_read")]
     pub auto_read_zones_bypass: bool,
 
-    /// Czy automatycznie odpytywać o stan awarii "brak naruszenia" wejść (0x07).
+    /// Whether to auto-read zone 'no violation trouble' (0x07) via push notifications.
     #[serde(default = "default_auto_read")]
     pub auto_read_zones_no_violation_trouble: bool,
 
-    /// Czy automatycznie odpytywać o stan awarii "długie naruszenie" wejść (0x08).
+    /// Whether to auto-read zone 'long violation trouble' (0x08) via push notifications.
     #[serde(default = "default_auto_read")]
     pub auto_read_zones_long_violation_trouble: bool,
 
-    /// Czy automatycznie odpytywać o stan uzbrojenia stref (suppressed) (0x09).
+    /// Whether to auto-read partition suppressed arm state (0x09) via push notifications.
     #[serde(default = "default_auto_read")]
     pub auto_read_partitions_armed_suppressed: bool,
 
-    /// Czy automatycznie odpytywać o faktyczny stan uzbrojenia stref (0x0A).
+    /// Whether to auto-read partition real arm state (0x0A) via push notifications.
     #[serde(default = "default_auto_read")]
     pub auto_read_partitions_armed_really: bool,
 
-    /// Czy automatycznie odpytywać o stan alarmów stref (0x13).
+    /// Whether to auto-read partition alarms (0x13) via push notifications.
     #[serde(default = "default_auto_read")]
     pub auto_read_partitions_alarm: bool,
 
-    /// Czy automatycznie odpytywać o stan pamięci alarmów stref (0x15).
+    /// Whether to auto-read partition alarm memory (0x15) via push notifications.
     #[serde(default = "default_auto_read")]
     pub auto_read_partitions_alarm_memory: bool,
 
-    /// Czy automatycznie odpytywać o czas na wejście (0x0E).
+    /// Whether to auto-read partition entry countdown time (0x0E) via push notifications.
     #[serde(default = "default_auto_read")]
     pub auto_read_partitions_entry_time: bool,
 
-    /// Czy automatycznie odpytywać o czas na wyjście (0x0F, 0x10).
+    /// Whether to auto-read partition exit countdown time (0x0F, 0x10) via push notifications.
     #[serde(default = "default_auto_read")]
     pub auto_read_partitions_exit_time: bool,
 
-    /// Czy automatycznie odpytywać o stan wyjść (0x17).
+    /// Whether to auto-read output states (0x17) via push notifications.
     #[serde(default = "default_auto_read")]
     pub auto_read_outputs_state: bool,
 
-    /// Czy automatycznie odpytywać o stan awarii (0x1B-0x30).
+    /// Whether to auto-read system hardware troubles (0x1B-0x30) via push notifications.
     #[serde(default = "default_auto_read")]
     pub auto_read_system_troubles: bool,
 
-    /// Czy automatycznie odpytywać o pamięć awarii (0x20-0x31).
+    /// Whether to auto-read system troubles memory (0x20-0x31) via push notifications.
     #[serde(default = "default_auto_read")]
     pub auto_read_troubles_memory: bool,
+
+    /// Whether automated background cyclic polling for temperature sensors is enabled.
+    /// Default: false.
+    #[serde(default = "default_polling_temperatures")]
+    pub polling_temperatures: bool,
+
+    /// List of zone IDs (1..256) configured as temperature probes to poll cyclically.
+    /// Requires `polling_temperatures: true`.
+    #[serde(default)]
+    pub polling_temperatures_zones: Vec<u16>,
+
+    /// Interval (in minutes) between consecutive temperature polling cycles.
+    /// Minimum: 1 minute.
+    #[serde(default = "default_polling_temperatures_interval_minutes")]
+    pub polling_temperatures_interval_minutes: u64,
+
+    /// Whether to emit temperature events (`ZoneTemperature`) on every read cycle,
+    /// even if the measured value has not changed. Default: false.
+    #[serde(default = "default_emit_unchanged")]
+    pub emit_unchanged_temperatures: bool,
+
+    /// Whether to emit zone events (`ZoneViolation`, `ZoneTamper`, etc.) on every read cycle,
+    /// even if the zone state has not changed. Default: false.
+    #[serde(default = "default_emit_unchanged")]
+    pub emit_unchanged_zones: bool,
+
+    /// Whether to emit output events (`OutputChanged`) on every read cycle,
+    /// even if the output state has not changed. Default: false.
+    #[serde(default = "default_emit_unchanged")]
+    pub emit_unchanged_outputs: bool,
+
+    /// Whether to emit partition events (`PartitionArmed`, `PartitionAlarm`, etc.) on every read cycle,
+    /// even if the partition state has not changed. Default: false.
+    #[serde(default = "default_emit_unchanged")]
+    pub emit_unchanged_partitions: bool,
+
+    /// Whether to emit trouble events (`TroubleChanged`) on every read cycle,
+    /// even if the hardware trouble state has not changed. Default: false.
+    #[serde(default = "default_emit_unchanged")]
+    pub emit_unchanged_troubles: bool,
+
+    /// Whether to emit system status events (`SystemStatusChanged`) on every 0x1A read,
+    /// even if status bits have not changed. Default: false.
+    #[serde(default = "default_emit_unchanged")]
+    pub emit_unchanged_system_status: bool,
 }
 
 impl Config {
-    /// Sprawdza czy jakakolwiek opcja automatycznego odczytu jest włączona.
+    /// Returns true if any auto-read (0x7F push notification) category is enabled.
     pub fn is_auto_read_enabled(&self) -> bool {
         self.auto_read_zones_violation
             || self.auto_read_zones_tamper
@@ -171,6 +216,11 @@ impl Config {
             || self.auto_read_outputs_state
             || self.auto_read_system_troubles
             || self.auto_read_troubles_memory
+    }
+
+    /// Returns true if background temperature polling is configured and enabled.
+    pub fn is_polling_enabled(&self) -> bool {
+        self.polling_temperatures && !self.polling_temperatures_zones.is_empty()
     }
 }
 
@@ -214,10 +264,22 @@ impl Default for Config {
             auto_read_outputs_state: default_auto_read(),
             auto_read_system_troubles: default_auto_read(),
             auto_read_troubles_memory: default_auto_read(),
+            polling_temperatures: default_polling_temperatures(),
+            polling_temperatures_zones: Vec::new(),
+            polling_temperatures_interval_minutes: default_polling_temperatures_interval_minutes(),
+            emit_unchanged_temperatures: default_emit_unchanged(),
+            emit_unchanged_zones: default_emit_unchanged(),
+            emit_unchanged_outputs: default_emit_unchanged(),
+            emit_unchanged_partitions: default_emit_unchanged(),
+            emit_unchanged_troubles: default_emit_unchanged(),
+            emit_unchanged_system_status: default_emit_unchanged(),
         }
     }
 }
 
+fn default_emit_unchanged() -> bool { false }
+fn default_polling_temperatures() -> bool { false }
+fn default_polling_temperatures_interval_minutes() -> u64 { 1 }
 fn default_auto_read() -> bool { false }
 fn default_auto_reconnect() -> bool { true }
 fn default_temp_blocking_enabled() -> bool { true }
@@ -229,7 +291,7 @@ fn default_write_timeout_ms() -> u64 { 500 }
 fn default_temp_read_timeout_ms() -> u64 { 2000 }
 fn default_buffer_timeout_ms() -> u64 { 10000 }
 
-/// Konfiguracja metody połączenia.
+/// Transport connection parameters.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum ConnectionConfig {

@@ -1,68 +1,71 @@
 use crate::command::SatelResult;
 use crate::state::{
-    AutoReadReport, ConnectionState, EthmVersion, IntegraVersion, SystemStatus, TroubleType,
+    AutoReadReport, ConnectionState, EthmVersion, IntegraVersion, SystemStatus,
+    TemperatureSensorStatus, TroubleType,
 };
 
-/// Zdarzenia przesyłane przez system rozgłoszeniowy (broadcast).
-/// Można je odbierać przez `SatelIntegra::subscribe()`.
+/// Events broadcasted in real time to subscribers.
+/// Can be received via `SatelIntegra::subscribe_events()`.
 #[derive(Debug, Clone)]
 pub enum SatelEvent {
-    /// Zmiana stanu połączenia.
+    /// Connection state transition.
     ConnectionChanged(ConnectionState),
-    /// Zmiana stanu naruszenia wejścia (0x00).
+    /// Zone violation state changed (0x00).
     ZoneViolation { id: u16, state: bool },
-    /// Zmiana stanu sabotażu wejścia (0x01).
+    /// Zone tamper state changed (0x01).
     ZoneTamper { id: u16, state: bool },
-    /// Zmiana stanu alarmu wejścia (0x02).
+    /// Zone alarm state changed (0x02).
     ZoneAlarm { id: u16, state: bool },
-    /// Zmiana stanu alarmu sabotażowego wejścia (0x03).
+    /// Zone tamper alarm state changed (0x03).
     ZoneTamperAlarm { id: u16, state: bool },
-    /// Zmiana stanu pamięci alarmu wejścia (0x04).
+    /// Zone alarm memory state changed (0x04).
     ZoneAlarmMemory { id: u16, state: bool },
-    /// Zmiana stanu pamięci alarmu sabotażowego wejścia (0x05).
+    /// Zone tamper alarm memory state changed (0x05).
     ZoneTamperAlarmMemory { id: u16, state: bool },
-    /// Zmiana stanu blokady wejścia (0x06).
+    /// Zone bypass state changed (0x06).
     ZoneBypass { id: u16, state: bool },
-    /// Zmiana stanu awarii "brak naruszenia" (0x07).
+    /// Zone 'no violation trouble' state changed (0x07).
     ZoneNoViolationTrouble { id: u16, state: bool },
-    /// Zmiana stanu awarii "długie naruszenie" (0x08).
+    /// Zone 'long violation trouble' state changed (0x08).
     ZoneLongViolationTrouble { id: u16, state: bool },
-    /// Zmiana stanu uzbrojenia strefy (0x09).
+    /// Partition suppressed arm state changed (0x09).
     PartitionArmed { id: u16, state: bool },
-    /// Zmiana faktycznego stanu uzbrojenia strefy (0x0A).
+    /// Partition real arm state changed (0x0A).
     PartitionArmedReally { id: u16, state: bool },
-    /// Zmiana stanu alarmu w strefie (0x13).
+    /// Partition alarm state changed (0x13).
     PartitionAlarm { id: u16, state: bool },
-    /// Zmiana stanu pamięci alarmu w strefie (0x15).
+    /// Partition alarm memory state changed (0x15).
     PartitionAlarmMemory { id: u16, state: bool },
-    /// Zmiana stanu czasu na wejście (0x0E).
+    /// Partition entry countdown time state changed (0x0E).
     PartitionEntryTime { id: u16, state: bool },
-    /// Zmiana stanu czasu na wyjście > 10s (0x0F).
+    /// Partition exit countdown time (>10s) state changed (0x0F).
     PartitionExitTimeGt10s { id: u16, state: bool },
-    /// Zmiana stanu czasu na wyjście < 10s (0x10).
+    /// Partition exit countdown time (<10s) state changed (0x10).
     PartitionExitTimeLt10s { id: u16, state: bool },
-    /// Zmiana stanu wyjścia (0x17).
+    /// Output state changed (0x17).
     OutputChanged { id: u16, state: bool },
-    /// Zmiana temperatury wejścia (0x7D).
+    /// Zone temperature sensor reading updated (0x7D).
     ZoneTemperatureChanged { id: u16, temperature: f32 },
-    /// Odebrano nazwę wejścia (0xEE typ 1).
+    /// Zone temperature sensor fault error (timeout, missing, sensor error, blocked).
+    ZoneTemperatureError { id: u16, status: TemperatureSensorStatus },
+    /// Zone UTF-8 name received (0xEE type 1).
     ZoneNameReceived { id: u16, name: String },
-    /// Odebrano nazwę wyjścia (0xEE typ 4).
+    /// Output UTF-8 name received (0xEE type 4).
     OutputNameReceived { id: u16, name: String },
-    /// Odebrano nazwę strefy (0xEE typ 0).
+    /// Partition UTF-8 name received (0xEE type 0).
     PartitionNameReceived { id: u16, name: String },
-    /// Odebrano informacje o wersji centrali (0x7E).
+    /// Integra panel model and firmware version received (0x7E).
     IntegraVersionReceived(IntegraVersion),
-    /// Odebrano informacje o wersji modułu komunikacyjnego (0x7C).
+    /// ETHM/UART communication module version received (0x7C).
     EthmVersionReceived(EthmVersion),
-    /// Otrzymano kod wyniku operacji z panelu (0xEF).
+    /// Panel command result code received (0xEF).
     PanelMessage(SatelResult),
-    /// Konfiguracja autoodczytu zakończona.
+    /// Auto-read push notification categories configured (0x7F).
     AutoReadConfigured(AutoReadReport),
-    /// Zmiana stanu awarii systemu.
+    /// System hardware trouble state changed.
     Trouble(TroubleType, bool),
-    /// Zmiana stanu pamięci awarii systemu.
+    /// System trouble memory state changed.
     TroubleMemory(TroubleType, bool),
-    /// Zmiana ogólnego statusu systemu (0x1A).
+    /// System status bits updated (0x1A).
     SystemStatusChanged(SystemStatus),
 }

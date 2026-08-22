@@ -1,4 +1,4 @@
-/// Enum reprezentujący komendy protokołu Satel Integra.
+/// Enum representing Satel Integra protocol integration command codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SatelCommand {
@@ -196,20 +196,20 @@ impl SatelCommand {
     }
 }
 
-/// Reprezentuje czytelne kody wyników operacji zwracane przez centralę (0xEF).
+/// Represents readable result status codes returned by the Integra panel (0xEF).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SatelResult {
-    /// Operacja zakończona sukcesem (0x00).
+    /// Operation completed successfully (0x00).
     Ok,
-    /// Błędny kod użytkownika (0x01).
+    /// Invalid user code (0x01).
     InvalidUserCode,
-    /// Brak dostępu (0x02).
+    /// No access rights (0x02).
     NoAccess,
-    /// Nie można uzbroić (0x11, 0x12).
+    /// Cannot arm selected partition(s) (0x11, 0x12).
     CanNotArm,
-    /// Komenda przyjęta do przetwarzania (0xFF).
+    /// Command accepted for processing (0xFF).
     CommandAccepted,
-    /// Inny, nieznany błąd.
+    /// Other, unknown error or result code.
     Other(u8),
 }
 
@@ -228,11 +228,11 @@ impl SatelResult {
     pub fn to_description(&self) -> &str {
         match self {
             Self::Ok => "OK",
-            Self::InvalidUserCode => "Błędny kod użytkownika",
-            Self::NoAccess => "Brak dostępu",
-            Self::CanNotArm => "Nie można uzbroić",
-            Self::CommandAccepted => "Komenda przyjęta do przetwarzania",
-            Self::Other(_) => "Nieznany błąd lub status",
+            Self::InvalidUserCode => "Invalid user access code",
+            Self::NoAccess => "No access rights",
+            Self::CanNotArm => "Cannot arm partition (violated zones or fault)",
+            Self::CommandAccepted => "Command accepted for processing",
+            Self::Other(_) => "Unknown error or status code",
         }
     }
 }

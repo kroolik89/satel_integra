@@ -6,8 +6,8 @@ use crate::state::{
 };
 use chrono::Local;
 
-/// Przetwarza całą ramkę odpowiedzi na komendę 0x7D (Read zone temperature).
-/// Zwraca krotkę (Numer wejścia, Temperatura).
+/// Parses the complete response frame for command 0x7D (Read zone temperature).
+/// Returns a tuple `(Zone ID, Temperature in °C)`.
 pub fn process_zone_temperature(frame: &[u8]) -> Result<(u16, f32), SatelError> {
     if frame.is_empty() || frame[0] != 0x7D {
         return Err(SatelError::InvalidFrame);
@@ -25,23 +25,23 @@ pub fn process_zone_temperature(frame: &[u8]) -> Result<(u16, f32), SatelError> 
         return Err(SatelError::TemperatureSensorError);
     }
 
-    // 0x0000 = -55.0°C, krok 0.5°C
+    // 0x0000 = -55.0°C, 0.5°C step
     let temperature = (temp_raw as f32 * 0.5) - 55.0;
 
     Ok((zone_id, temperature))
 }
 
-/// Przetwarza całą ramkę odpowiedzi na komendę 0x01 (Zones tamper).
-/// Uwzględnia listę wejść, których stan ma zostać odwrócony.
+/// Parses the complete response frame for command 0x01 (Zones tamper).
+/// Applies inversion for zones listed in `invert_list`.
 pub fn process_zones_tamper(frame: &[u8], invert_list: &[u16]) -> Result<ZonesTamperData, SatelError> {
     if frame.is_empty() || frame[0] != 0x01 {
-        tracing::error!("Nieprawidłowy kod komendy w ramce sabotażu: {:02X?}", frame.first());
+        tracing::error!("Invalid command byte in zone tamper frame: {:02X?}", frame.first());
         return Err(SatelError::InvalidFrame);
     }
 
     let data = &frame[1..];
     if data.len() < 16 {
-        tracing::error!("Dane sabotażu zbyt krótkie: {} bajtów", data.len());
+        tracing::error!("Zone tamper data frame too short: {} bytes", data.len());
         return Err(SatelError::InvalidFrame);
     }
 
@@ -51,17 +51,17 @@ pub fn process_zones_tamper(frame: &[u8], invert_list: &[u16]) -> Result<ZonesTa
     })
 }
 
-/// Przetwarza całą ramkę odpowiedzi na komendę 0x02 (Zones alarm).
-/// Uwzględnia listę wejść, których stan ma zostać odwrócony.
+/// Parses the complete response frame for command 0x02 (Zones alarm).
+/// Applies inversion for zones listed in `invert_list`.
 pub fn process_zones_alarm(frame: &[u8], invert_list: &[u16]) -> Result<ZonesAlarmData, SatelError> {
     if frame.is_empty() || frame[0] != 0x02 {
-        tracing::error!("Nieprawidłowy kod komendy w ramce alarmów: {:02X?}", frame.first());
+        tracing::error!("Invalid command byte in zone alarm frame: {:02X?}", frame.first());
         return Err(SatelError::InvalidFrame);
     }
 
     let data = &frame[1..];
     if data.len() < 16 {
-        tracing::error!("Dane alarmów zbyt krótkie: {} bajtów", data.len());
+        tracing::error!("Zone alarm data frame too short: {} bytes", data.len());
         return Err(SatelError::InvalidFrame);
     }
 
@@ -71,17 +71,17 @@ pub fn process_zones_alarm(frame: &[u8], invert_list: &[u16]) -> Result<ZonesAla
     })
 }
 
-/// Przetwarza całą ramkę odpowiedzi na komendę 0x00 (Zones violation).
-/// Uwzględnia listę wejść, których stan ma zostać odwrócony.
+/// Parses the complete response frame for command 0x00 (Zones violation).
+/// Applies inversion for zones listed in `invert_list`.
 pub fn process_zones_violation(frame: &[u8], invert_list: &[u16]) -> Result<ZonesViolationData, SatelError> {
     if frame.is_empty() || frame[0] != 0x00 {
-        tracing::error!("Nieprawidłowy kod komendy w ramce naruszeń: {:02X?}", frame.first());
+        tracing::error!("Invalid command byte in zone violation frame: {:02X?}", frame.first());
         return Err(SatelError::InvalidFrame);
     }
 
     let data = &frame[1..];
     if data.len() < 16 {
-        tracing::error!("Dane naruszeń zbyt krótkie: {} bajtów", data.len());
+        tracing::error!("Zone violation data frame too short: {} bytes", data.len());
         return Err(SatelError::InvalidFrame);
     }
 
@@ -91,17 +91,17 @@ pub fn process_zones_violation(frame: &[u8], invert_list: &[u16]) -> Result<Zone
     })
 }
 
-/// Przetwarza całą ramkę odpowiedzi na komendę 0x03 (Zones tamper alarm).
-/// Uwzględnia listę wejść, których stan ma zostać odwrócony.
+/// Parses the complete response frame for command 0x03 (Zones tamper alarm).
+/// Applies inversion for zones listed in `invert_list`.
 pub fn process_zones_tamper_alarm(frame: &[u8], invert_list: &[u16]) -> Result<ZonesTamperAlarmData, SatelError> {
     if frame.is_empty() || frame[0] != 0x03 {
-        tracing::error!("Nieprawidłowy kod komendy w ramce alarmów sabotażowych: {:02X?}", frame.first());
+        tracing::error!("Invalid command byte in zone tamper alarm frame: {:02X?}", frame.first());
         return Err(SatelError::InvalidFrame);
     }
 
     let data = &frame[1..];
     if data.len() < 16 {
-        tracing::error!("Dane alarmów sabotażowych zbyt krótkie: {} bajtów", data.len());
+        tracing::error!("Zone tamper alarm data frame too short: {} bytes", data.len());
         return Err(SatelError::InvalidFrame);
     }
 
@@ -111,17 +111,17 @@ pub fn process_zones_tamper_alarm(frame: &[u8], invert_list: &[u16]) -> Result<Z
     })
 }
 
-/// Przetwarza całą ramkę odpowiedzi na komendę 0x04 (Zones alarm memory).
-/// Uwzględnia listę wejść, których stan ma zostać odwrócony.
+/// Parses the complete response frame for command 0x04 (Zones alarm memory).
+/// Applies inversion for zones listed in `invert_list`.
 pub fn process_zones_alarm_memory(frame: &[u8], invert_list: &[u16]) -> Result<ZonesAlarmMemoryData, SatelError> {
     if frame.is_empty() || frame[0] != 0x04 {
-        tracing::error!("Nieprawidłowy kod komendy w ramce pamięci alarmów: {:02X?}", frame.first());
+        tracing::error!("Invalid command byte in zone alarm memory frame: {:02X?}", frame.first());
         return Err(SatelError::InvalidFrame);
     }
 
     let data = &frame[1..];
     if data.len() < 16 {
-        tracing::error!("Dane pamięci alarmów zbyt krótkie: {} bajtów", data.len());
+        tracing::error!("Zone alarm memory data frame too short: {} bytes", data.len());
         return Err(SatelError::InvalidFrame);
     }
 
@@ -131,17 +131,17 @@ pub fn process_zones_alarm_memory(frame: &[u8], invert_list: &[u16]) -> Result<Z
     })
 }
 
-/// Przetwarza całą ramkę odpowiedzi na komendę 0x05 (Zones tamper alarm memory).
-/// Uwzględnia listę wejść, których stan ma zostać odwrócony.
+/// Parses the complete response frame for command 0x05 (Zones tamper alarm memory).
+/// Applies inversion for zones listed in `invert_list`.
 pub fn process_zones_tamper_alarm_memory(frame: &[u8], invert_list: &[u16]) -> Result<ZonesTamperAlarmMemoryData, SatelError> {
     if frame.is_empty() || frame[0] != 0x05 {
-        tracing::error!("Nieprawidłowy kod komendy w ramce pamięci alarmów sabotażowych: {:02X?}", frame.first());
+        tracing::error!("Invalid command byte in zone tamper alarm memory frame: {:02X?}", frame.first());
         return Err(SatelError::InvalidFrame);
     }
 
     let data = &frame[1..];
     if data.len() < 16 {
-        tracing::error!("Dane pamięci alarmów sabotażowych zbyt krótkie: {} bajtów", data.len());
+        tracing::error!("Zone tamper alarm memory data frame too short: {} bytes", data.len());
         return Err(SatelError::InvalidFrame);
     }
 
@@ -151,17 +151,17 @@ pub fn process_zones_tamper_alarm_memory(frame: &[u8], invert_list: &[u16]) -> R
     })
 }
 
-/// Przetwarza całą ramkę odpowiedzi na komendę 0x06 (Zones bypass).
-/// Uwzględnia listę wejść, których stan ma zostać odwrócony.
+/// Parses the complete response frame for command 0x06 (Zones bypass).
+/// Applies inversion for zones listed in `invert_list`.
 pub fn process_zones_bypass(frame: &[u8], invert_list: &[u16]) -> Result<ZonesBypassData, SatelError> {
     if frame.is_empty() || frame[0] != 0x06 {
-        tracing::error!("Nieprawidłowy kod komendy w ramce blokad (bypass): {:02X?}", frame.first());
+        tracing::error!("Invalid command byte in zone bypass frame: {:02X?}", frame.first());
         return Err(SatelError::InvalidFrame);
     }
 
     let data = &frame[1..];
     if data.len() < 16 {
-        tracing::error!("Dane blokad (bypass) zbyt krótkie: {} bajtów", data.len());
+        tracing::error!("Zone bypass data frame too short: {} bytes", data.len());
         return Err(SatelError::InvalidFrame);
     }
 
@@ -171,17 +171,17 @@ pub fn process_zones_bypass(frame: &[u8], invert_list: &[u16]) -> Result<ZonesBy
     })
 }
 
-/// Przetwarza całą ramkę odpowiedzi na komendę 0x07 (Zones 'no violation' trouble).
-/// Uwzględnia listę wejść, których stan ma zostać odwrócony.
+/// Parses the complete response frame for command 0x07 (Zones 'no violation' trouble).
+/// Applies inversion for zones listed in `invert_list`.
 pub fn process_zones_no_violation_trouble(frame: &[u8], invert_list: &[u16]) -> Result<ZonesNoViolationTroubleData, SatelError> {
     if frame.is_empty() || frame[0] != 0x07 {
-        tracing::error!("Nieprawidłowy kod komendy w ramce awarii 'brak naruszenia': {:02X?}", frame.first());
+        tracing::error!("Invalid command byte in zone 'no violation' trouble frame: {:02X?}", frame.first());
         return Err(SatelError::InvalidFrame);
     }
 
     let data = &frame[1..];
     if data.len() < 16 {
-        tracing::error!("Dane awarii 'brak naruszenia' zbyt krótkie: {} bajtów", data.len());
+        tracing::error!("Zone 'no violation' trouble data frame too short: {} bytes", data.len());
         return Err(SatelError::InvalidFrame);
     }
 
@@ -191,17 +191,17 @@ pub fn process_zones_no_violation_trouble(frame: &[u8], invert_list: &[u16]) -> 
     })
 }
 
-/// Przetwarza całą ramkę odpowiedzi na komendę 0x08 (Zones 'long violation' trouble).
-/// Uwzględnia listę wejść, których stan ma zostać odwrócony.
+/// Parses the complete response frame for command 0x08 (Zones 'long violation' trouble).
+/// Applies inversion for zones listed in `invert_list`.
 pub fn process_zones_long_violation_trouble(frame: &[u8], invert_list: &[u16]) -> Result<ZonesLongViolationTroubleData, SatelError> {
     if frame.is_empty() || frame[0] != 0x08 {
-        tracing::error!("Nieprawidłowy kod komendy w ramce awarii 'długie naruszenie': {:02X?}", frame.first());
+        tracing::error!("Invalid command byte in zone 'long violation' trouble frame: {:02X?}", frame.first());
         return Err(SatelError::InvalidFrame);
     }
 
     let data = &frame[1..];
     if data.len() < 16 {
-        tracing::error!("Dane awarii 'długie naruszenie' zbyt krótkie: {} bajtów", data.len());
+        tracing::error!("Zone 'long violation' trouble data frame too short: {} bytes", data.len());
         return Err(SatelError::InvalidFrame);
     }
 
@@ -211,7 +211,7 @@ pub fn process_zones_long_violation_trouble(frame: &[u8], invert_list: &[u16]) -
     })
 }
 
-/// Wspólny helper: parsuje bajty bitowe do Vec<bool> z opcjonalną inwersją.
+/// Common helper: parses bitwise mask bytes into `Vec<bool>` with optional zone state inversion.
 fn parse_bit_states(data: &[u8], invert_list: &[u16]) -> Vec<bool> {
     let mut states = Vec::with_capacity(data.len() * 8);
     for (byte_idx, &byte) in data.iter().enumerate() {

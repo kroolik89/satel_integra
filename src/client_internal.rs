@@ -1,7 +1,5 @@
-/// Implementacja metod wewnętrznych aktualizacji cache.
-/// Wszystkie metody są pub(crate) i przeznaczone do użycia wyłącznie przez:
-///   - SatelIntegra (client.rs)
-///   - SatelAutoRequester (auto_requester.rs)
+//! Internal state update methods for in-memory cache synchronization.
+//! All methods are `pub(crate)` and used by `SatelIntegra` and `SatelAutoRequester`.
 use crate::client::SatelIntegra;
 use crate::command::SatelCommand;
 use crate::error::SatelError;
@@ -35,24 +33,46 @@ impl SatelIntegra {
     }
 
     pub(crate) fn update_temp_error(&self, zone_id: u16, error: &SatelError) -> Result<(), SatelError> {
-        let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
-        let zone = state
-            .zones
-            .get_mut((zone_id.wrapping_sub(1) % 256) as usize)
-            .ok_or(SatelError::InvalidFrame)?;
+        let (zone_id, reported_status) = {
+            let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+            let zone = state
+                .zones
+                .get_mut((zone_id.wrapping_sub(1) % 256) as usize)
+                .ok_or(SatelError::InvalidFrame)?;
 
-        match error {
-            SatelError::Timeout | SatelError::TemperatureNotSupportedOrTimeOut => {
-                zone.temperature_timeout_errors_total += 1;
-                zone.temperature_timeout_errors_current += 1;
-            }
-            SatelError::TemperatureSensorError => {
-                zone.temperature_sensor_errors_total += 1;
-                zone.temperature_sensor_errors_current += 1;
-            }
-            _ => {}
-        }
-        zone.temperature_read_at = Local::now();
+            let status = match error {
+                SatelError::Timeout | SatelError::TemperatureNotSupportedOrTimeOut => {
+                    zone.temperature_timeout_errors_total += 1;
+                    zone.temperature_timeout_errors_current += 1;
+                    if zone.temperature_timeout_errors_current >= self.config.temp_max_timeout_errors {
+                        zone.temperature_status = crate::state::TemperatureSensorStatus::BlockSensorMissing;
+                    } else {
+                        zone.temperature_status = crate::state::TemperatureSensorStatus::SensorMissing;
+                    }
+                    // Real network attempt was a timeout
+                    crate::state::TemperatureSensorStatus::SensorMissing
+                }
+                SatelError::TemperatureSensorError => {
+                    zone.temperature_sensor_errors_total += 1;
+                    zone.temperature_sensor_errors_current += 1;
+                    if zone.temperature_sensor_errors_current >= self.config.temp_max_sensor_errors {
+                        zone.temperature_status = crate::state::TemperatureSensorStatus::BlockCommunicationError;
+                    } else {
+                        zone.temperature_status = crate::state::TemperatureSensorStatus::CommunicationError;
+                    }
+                    // Real network attempt was a communication fault (0xFFFF)
+                    crate::state::TemperatureSensorStatus::CommunicationError
+                }
+                _ => zone.temperature_status,
+            };
+            zone.temperature_read_at = Local::now();
+            (zone.id, status)
+        };
+
+        let _ = self.event_tx.send(SatelEvent::ZoneTemperatureError {
+            id: zone_id,
+            status: reported_status,
+        });
         Ok(())
     }
 
@@ -60,7 +80,8 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(zone) = state.zones.get_mut(i) {
-                if zone.tamper_state != new_state {
+                let changed = zone.tamper_state != new_state;
+                if changed || self.config.emit_unchanged_zones {
                     zone.tamper_state = new_state;
                     zone.tamper_read_at = result.read_at;
                     let _ = self.event_tx.send(SatelEvent::ZoneTamper { id: zone.id, state: new_state });
@@ -74,7 +95,8 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(zone) = state.zones.get_mut(i) {
-                if zone.alarm_state != new_state {
+                let changed = zone.alarm_state != new_state;
+                if changed || self.config.emit_unchanged_zones {
                     zone.alarm_state = new_state;
                     zone.alarm_read_at = result.read_at;
                     let _ = self.event_tx.send(SatelEvent::ZoneAlarm { id: zone.id, state: new_state });
@@ -88,7 +110,8 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(zone) = state.zones.get_mut(i) {
-                if zone.violation_state != new_state {
+                let changed = zone.violation_state != new_state;
+                if changed || self.config.emit_unchanged_zones {
                     zone.violation_state = new_state;
                     zone.violation_read_at = result.read_at;
                     let _ = self.event_tx.send(SatelEvent::ZoneViolation { id: zone.id, state: new_state });
@@ -102,7 +125,8 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(zone) = state.zones.get_mut(i) {
-                if zone.tamper_alarm_state != new_state {
+                let changed = zone.tamper_alarm_state != new_state;
+                if changed || self.config.emit_unchanged_zones {
                     zone.tamper_alarm_state = new_state;
                     zone.tamper_alarm_read_at = result.read_at;
                     let _ = self.event_tx.send(SatelEvent::ZoneTamperAlarm { id: zone.id, state: new_state });
@@ -116,7 +140,8 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(zone) = state.zones.get_mut(i) {
-                if zone.alarm_memory_state != new_state {
+                let changed = zone.alarm_memory_state != new_state;
+                if changed || self.config.emit_unchanged_zones {
                     zone.alarm_memory_state = new_state;
                     zone.alarm_memory_read_at = result.read_at;
                     let _ = self.event_tx.send(SatelEvent::ZoneAlarmMemory { id: zone.id, state: new_state });
@@ -130,7 +155,8 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(zone) = state.zones.get_mut(i) {
-                if zone.tamper_alarm_memory_state != new_state {
+                let changed = zone.tamper_alarm_memory_state != new_state;
+                if changed || self.config.emit_unchanged_zones {
                     zone.tamper_alarm_memory_state = new_state;
                     zone.tamper_alarm_memory_read_at = result.read_at;
                     let _ = self.event_tx.send(SatelEvent::ZoneTamperAlarmMemory { id: zone.id, state: new_state });
@@ -144,7 +170,8 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(zone) = state.zones.get_mut(i) {
-                if zone.bypass_state != new_state {
+                let changed = zone.bypass_state != new_state;
+                if changed || self.config.emit_unchanged_zones {
                     zone.bypass_state = new_state;
                     zone.bypass_read_at = result.read_at;
                     let _ = self.event_tx.send(SatelEvent::ZoneBypass { id: zone.id, state: new_state });
@@ -158,7 +185,8 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(zone) = state.zones.get_mut(i) {
-                if zone.no_violation_trouble_state != new_state {
+                let changed = zone.no_violation_trouble_state != new_state;
+                if changed || self.config.emit_unchanged_zones {
                     zone.no_violation_trouble_state = new_state;
                     zone.no_violation_trouble_read_at = result.read_at;
                     let _ = self.event_tx.send(SatelEvent::ZoneNoViolationTrouble { id: zone.id, state: new_state });
@@ -172,7 +200,8 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(zone) = state.zones.get_mut(i) {
-                if zone.long_violation_trouble_state != new_state {
+                let changed = zone.long_violation_trouble_state != new_state;
+                if changed || self.config.emit_unchanged_zones {
                     zone.long_violation_trouble_state = new_state;
                     zone.long_violation_trouble_read_at = result.read_at;
                     let _ = self.event_tx.send(SatelEvent::ZoneLongViolationTrouble { id: zone.id, state: new_state });
@@ -186,7 +215,8 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(partition) = state.partitions.get_mut(i) {
-                if partition.armed_suppressed != new_state {
+                let changed = partition.armed_suppressed != new_state;
+                if changed || self.config.emit_unchanged_partitions {
                     partition.armed_suppressed = new_state;
                     partition.armed_suppressed_at = result.read_at;
                     let _ = self.event_tx.send(SatelEvent::PartitionArmed { id: partition.id, state: new_state });
@@ -200,7 +230,8 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(partition) = state.partitions.get_mut(i) {
-                if partition.armed_really != new_state {
+                let changed = partition.armed_really != new_state;
+                if changed || self.config.emit_unchanged_partitions {
                     partition.armed_really = new_state;
                     partition.armed_really_at = result.read_at;
                     let _ = self.event_tx.send(SatelEvent::PartitionArmedReally { id: partition.id, state: new_state });
@@ -214,7 +245,8 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(partition) = state.partitions.get_mut(i) {
-                if partition.alarm != new_state {
+                let changed = partition.alarm != new_state;
+                if changed || self.config.emit_unchanged_partitions {
                     partition.alarm = new_state;
                     partition.alarm_at = result.read_at;
                     let _ = self.event_tx.send(SatelEvent::PartitionAlarm { id: partition.id, state: new_state });
@@ -228,7 +260,8 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(partition) = state.partitions.get_mut(i) {
-                if partition.alarm_memory != new_state {
+                let changed = partition.alarm_memory != new_state;
+                if changed || self.config.emit_unchanged_partitions {
                     partition.alarm_memory = new_state;
                     partition.alarm_memory_at = result.read_at;
                     let _ = self.event_tx.send(SatelEvent::PartitionAlarmMemory { id: partition.id, state: new_state });
@@ -242,7 +275,8 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(partition) = state.partitions.get_mut(i) {
-                if partition.entry_time != new_state {
+                let changed = partition.entry_time != new_state;
+                if changed || self.config.emit_unchanged_partitions {
                     partition.entry_time = new_state;
                     partition.entry_time_at = result.read_at;
                     let _ = self.event_tx.send(SatelEvent::PartitionEntryTime { id: partition.id, state: new_state });
@@ -256,7 +290,8 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(partition) = state.partitions.get_mut(i) {
-                if partition.exit_time_gt_10s != new_state {
+                let changed = partition.exit_time_gt_10s != new_state;
+                if changed || self.config.emit_unchanged_partitions {
                     partition.exit_time_gt_10s = new_state;
                     partition.exit_time_gt_10s_at = result.read_at;
                     let _ = self.event_tx.send(SatelEvent::PartitionExitTimeGt10s { id: partition.id, state: new_state });
@@ -270,7 +305,8 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(partition) = state.partitions.get_mut(i) {
-                if partition.exit_time_lt_10s != new_state {
+                let changed = partition.exit_time_lt_10s != new_state;
+                if changed || self.config.emit_unchanged_partitions {
                     partition.exit_time_lt_10s = new_state;
                     partition.exit_time_lt_10s_at = result.read_at;
                     let _ = self.event_tx.send(SatelEvent::PartitionExitTimeLt10s { id: partition.id, state: new_state });
@@ -284,7 +320,8 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(output) = state.outputs.get_mut(i) {
-                if output.state != new_state {
+                let changed = output.state != new_state;
+                if changed || self.config.emit_unchanged_outputs {
                     output.state = new_state;
                     output.state_read_at = result.read_at;
                     let _ = self.event_tx.send(SatelEvent::OutputChanged { id: output.id, state: new_state });
@@ -296,7 +333,8 @@ impl SatelIntegra {
 
     pub(crate) fn update_system_status_internal(&self, status: SystemStatus) -> Result<(), SatelError> {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
-        if state.system_status != Some(status) {
+        let changed = state.system_status != Some(status);
+        if changed || self.config.emit_unchanged_system_status {
             state.system_status = Some(status);
             let _ = self.event_tx.send(SatelEvent::SystemStatusChanged(status));
         }
@@ -333,7 +371,8 @@ impl SatelIntegra {
         }
 
         for (bit_idx, &new_val) in states.iter().enumerate() {
-            if target[bit_idx] != new_val {
+            let changed = target[bit_idx] != new_val;
+            if changed || self.config.emit_unchanged_troubles {
                 target[bit_idx] = new_val;
                 let trouble_type = map_trouble_part_bit(part_index as u8, bit_idx as u16);
                 let _ = if is_memory {

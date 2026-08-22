@@ -1,7 +1,7 @@
-//! Biblioteka do komunikacji z centralami alarmowymi Satel Integra
-//! poprzez protokół ETHM-1 Plus lub UART.
+//! Asynchronous Rust client for Satel Integra alarm control panels
+//! communicating via ETHM-1 Plus (TCP/IP) or UART (RS-232).
 //!
-//! # Przykład użycia
+//! # Quick Example
 //!
 //! ```no_run
 //! use satel_integra::{SatelIntegra, Config, ConnectionConfig};
@@ -19,7 +19,7 @@
 //!     let satel = SatelIntegra::new(config);
 //!     satel.connect().await?;
 //!
-//!     let mut events = satel.subscribe();
+//!     let mut events = satel.subscribe_events();
 //!     while let Ok(event) = events.recv().await {
 //!         println!("{:?}", event);
 //!     }
@@ -28,12 +28,13 @@
 //! }
 //! ```
 
-// --- Moduły wewnętrzne (ukryte) ---
+// --- Internal modules (private) ---
 pub(crate) mod auto_requester;
 pub(crate) mod client_internal;
+pub(crate) mod polling_worker;
 pub(crate) mod worker;
 
-// --- Moduły publiczne ---
+// --- Public modules ---
 pub mod client;
 pub mod codec;
 pub mod command;
@@ -43,9 +44,7 @@ pub mod event;
 pub mod parsers;
 pub mod state;
 
-
-
-// --- Re-eksport najważniejszych publicznych typów ---
+// --- Re-exports of primary public types ---
 pub use client::SatelIntegra;
 pub use codec::SatelCodec;
 pub use command::{SatelCommand, SatelResult};
@@ -54,17 +53,20 @@ pub use error::SatelError;
 pub use event::SatelEvent;
 pub use state::{
     AutoReadItemState, AutoReadItemStatus, AutoReadReport, ConnectionState, ConnectionStatus,
-    ConnectionTelemetry, ConnectionType, EthmCapabilities, EthmVersion, IntegraVersion,
-    Output, OutputName, Partition, PartitionName, SatelState, SatelStateHandle, SystemStatus,
-    TroubleType, Zone, ZoneName, ZoneStatus, ZoneTemperature,
+    ConnectionTelemetry, ConnectionType, EthmCapabilities, EthmPtsaTroubles, EthmVersion,
+    GsmModuleTroubles, IntegraVersion, MainBoardTroubles, Output, OutputName, Partition,
+    PartitionName, SatelState, SatelStateHandle, SystemStatus, TemperatureSensorStatus, TroubleType,
+    TroublesData, TroublesPart1Data, TroublesPart2Data, TroublesPart3Data, TroublesPart4Data,
+    TroublesPart5Data, TroublesPart6Data, TroublesPart7Data, TroublesPart8Data, Zone, ZoneName,
+    ZoneStatus, ZoneTemperature,
 };
 
 use std::sync::Once;
 
 static LOG_INIT: Once = Once::new();
 
-/// Inicjalizuje system logowania w formacie dostosowanym do biblioteki Satel Integra.
-/// Wywoływana automatycznie przy tworzeniu obiektu `SatelIntegra`.
+/// Initializes the tracing subscriber with a custom formatted output tailored for Satel Integra.
+/// Invoked automatically upon creating a `SatelIntegra` instance.
 pub fn init_logging() {
     LOG_INIT.call_once(|| {
         use tracing_subscriber::fmt::format::Writer;

@@ -83,6 +83,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         id, temperature
                     );
                 }
+                SatelEvent::ZoneTemperatureError { id, status } => {
+                    println!(
+                        "[TEMPERATURE ERROR] Zone #{:03} -> Status: {:?}",
+                        id, status
+                    );
+                }
                 // All other security/system events are ignored
                 _ => {}
             }

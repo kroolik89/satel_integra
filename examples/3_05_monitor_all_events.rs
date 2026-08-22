@@ -182,6 +182,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 SatelEvent::ZoneTemperatureChanged { id, temperature } => {
                     println!("[{}] [TEMPERATURE]       Zone #{:03} -> {:>5.1}°C", ts, id, temperature);
                 }
+                SatelEvent::ZoneTemperatureError { id, status } => {
+                    println!("[{}] [TEMP FAULT]        Zone #{:03} -> Status: {:?}", ts, id, status);
+                }
 
                 // --- Diagnostic Troubles ---
                 SatelEvent::Trouble(kind, state) => {
@@ -217,7 +220,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = satel.get_zones_violation().await;
     let _ = satel.get_outputs_state().await;
     let _ = satel.get_partitions_armed_really().await;
-    let _ = satel.get_system_troubles(SatelCommand::TroublesPart1).await;
+    let _ = satel.get_troubles(SatelCommand::TroublesPart1).await;
 
     // Sample temperature query
     match satel.get_zone_temperature(TEST_TEMP_ZONE).await {
