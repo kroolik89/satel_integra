@@ -6,7 +6,7 @@ use crate::client::SatelIntegra;
 use crate::command::SatelCommand;
 use crate::error::SatelError;
 use crate::event::SatelEvent;
-use crate::parsers::map_trouble_bit;
+use crate::parsers::map_trouble_part_bit;
 use crate::state::{
     EthmVersion, IntegraVersion, OutputsStateData, PartitionsArmedData, PartitionsData,
     SystemStatus, ZonesAlarmData, ZonesAlarmMemoryData, ZonesBypassData,
@@ -309,38 +309,33 @@ impl SatelIntegra {
             || (0x2E..=0x2F).contains(&byte_cmd)
             || byte_cmd == 0x31;
 
-        let base_index = match byte_cmd {
-            0x1B => 0,
-            0x1C => 40,
-            0x1D => 80,
-            0x1E => 120,
-            0x1F => 160,
-            0x2C => 200,
-            0x2D => 240,
-            0x30 => 280,
-            0x20 => 0,
-            0x21 => 40,
-            0x22 => 80,
-            0x23 => 120,
-            0x24 => 160,
-            0x2E => 200,
-            0x2F => 240,
-            0x31 => 280,
+        let part_index = match byte_cmd {
+            0x1B | 0x20 => 0,
+            0x1C | 0x21 => 1,
+            0x1D | 0x22 => 2,
+            0x1E | 0x23 => 3,
+            0x1F | 0x24 => 4,
+            0x2C | 0x2E => 5,
+            0x2D | 0x2F => 6,
+            0x30 | 0x31 => 7,
             _ => return Ok(()),
         };
 
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         let target = if is_memory {
-            &mut state.troubles_memory
+            &mut state.troubles_memory[part_index]
         } else {
-            &mut state.troubles
+            &mut state.troubles[part_index]
         };
 
-        for (i, &new_val) in states.iter().enumerate() {
-            let global_idx = base_index + i;
-            if global_idx < target.len() && target[global_idx] != new_val {
-                target[global_idx] = new_val;
-                let trouble_type = map_trouble_bit(global_idx as u16);
+        if target.len() < states.len() {
+            target.resize(states.len(), false);
+        }
+
+        for (bit_idx, &new_val) in states.iter().enumerate() {
+            if target[bit_idx] != new_val {
+                target[bit_idx] = new_val;
+                let trouble_type = map_trouble_part_bit(part_index as u8, bit_idx as u16);
                 let _ = if is_memory {
                     self.event_tx.send(SatelEvent::TroubleMemory(trouble_type, new_val))
                 } else {

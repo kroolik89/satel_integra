@@ -1,7 +1,52 @@
-//! Example 05: Query real-time status of all partitions (arming, alarms, entry/exit times).
+//! Example 1_05: Query real-time status of all partitions (arming, alarms, entry/exit times).
 //!
+//! ============================================================================
+//! 1. 2-STEP PARTITIONS STATUS WORKFLOW (NETWORK FETCH VS CACHE READ):
+//! ============================================================================
+//! The client operates with a 2-step data model:
+//!
+//! STEP 1: Network Queries (Fetches latest partition data from panel & updates internal cache):
+//!   Command | Async Method                               | Description
+//!   --------+--------------------------------------------+---------------------------------------------------
+//!   0x0A    | `satel.get_partitions_armed_really().await` | Actually armed partitions (full protection active)
+//!   0x09    | `satel.get_partitions_armed_suppressed().await` | Armed suppressed partitions (e.g. stay/partial arming)
+//!   0x13    | `satel.get_partitions_alarm().await`        | Partitions currently in active alarm state
+//!   0x15    | `satel.get_partitions_alarm_memory().await` | Partitions with latched alarm memory
+//!   0x0E/F  | `satel.get_partitions_times().await`       | Combined entry delay and exit delay timers (>10s / <10s)
+//!
+//! STEP 2: Instant Cache Inspection (Synchronous, zero network overhead):
+//!   - `satel.get_cached_partition_name(partition_id)`:
+//!       Returns `Option<PartitionName>` from local cache.
+//!   - `satel.state_handle()`:
+//!       Returns an `RwLock` read handle to entire internal `SatelState`.
+//!       Access `state.partitions[0..max_partitions]` for `PartitionStatus` items containing:
+//!         * `id`: Partition number (1..=32)
+//!         * `armed_really`: Boolean (full arming status)
+//!         * `armed_suppressed`: Boolean (suppressed/stay arming)
+//!         * `alarm`: Boolean (active alarm)
+//!         * `alarm_memory`: Boolean (stored alarm flag)
+//!         * `entry_time`: Boolean (entry delay timer countdown in progress)
+//!         * `exit_time_gt_10s`: Boolean (exit delay > 10 seconds remaining)
+//!         * `exit_time_lt_10s`: Boolean (exit delay < 10 seconds remaining)
+//!         * `partition_name`: Optional cached partition name
+//!         * Individual `read_at` timestamps for each state component
+//!
+//! ============================================================================
+//! 2. INTEGRA PARTITION ARCHITECTURE & CAPACITIES:
+//! ============================================================================
+//! - Partition capacity is dynamically derived from the panel model:
+//!     * Integra 24:       up to 4 partitions
+//!     * Integra 32 / 64:  up to 8 partitions
+//!     * Integra 128:      up to 16 partitions
+//!     * Integra 256 Plus: up to 32 partitions
+//! - `Armed Really` indicates physical security is active.
+//! - `Armed Suppressed` indicates arming modes where certain interior zones or alarms are bypassed.
+//!
+//! ============================================================================
+//! 3. EXECUTION INSTRUCTIONS:
+//! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 05_get_partitions_status
+//!   cargo run --example 1_05_get_partitions_status
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST - IP address of the panel (default: "192.168.1.100")
@@ -49,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         128 => 16,
         _ => 32,
     };
-    println!("Integra panel has {} partitions.\n", max_partitions);
+    println!("Integra panel model: {}, supported partitions: {}\n", version.model, max_partitions);
 
     // 4. Fetch real-time partition statuses from panel
     println!("Fetching partition statuses from control panel...");

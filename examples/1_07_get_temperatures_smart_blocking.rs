@@ -1,17 +1,46 @@
-//! Example 07: Demonstration of Smart Temperature Error Blocking & Self-Healing.
+//! Example 1_07: Demonstration of Smart Temperature Error Blocking & Self-Healing.
 //!
-//! IMPORTANT:
-//!   This example demonstrates how the library automatically protects against
-//!   blocking the communication queue when querying broken or non-existent sensors.
-//!   Please specify zone IDs that DO NOT have a temperature sensor connected!
+//! ============================================================================
+//! 1. SMART ERROR BLOCKING & QUEUE PROTECTION OVERVIEW:
+//! ============================================================================
+//! Querying temperature from a non-existent, broken, or unconfigured wireless sensor
+//! normally results in a 2000ms protocol timeout.
 //!
-//! NOTE ON SELF-HEALING:
-//!   If a previously faulty sensor successfully returns a temperature reading,
-//!   its internal error counter is automatically decremented (`-= 1`), allowing
-//!   the sensor to self-heal from temporary radio glitches.
+//! If an automation loop queries multiple missing sensors, timeout delays can quickly
+//! block the entire communication queue for 10-30 seconds, starving other vital
+//! alarm events and relay commands.
 //!
+//! The `satel_integra` library includes built-in protective logic:
+//!   - Method: `satel.get_zone_temperature(zone_id).await` (automatically applies blocking when `temp_blocking_enabled: true`)
+//!   - If consecutive timeouts reach `temp_max_timeout_errors` (e.g. 3):
+//!       * The sensor is marked as `TemperatureSensorStatus::NotSupported`.
+//!       * Subsequent queries return `Err(SatelError::TempTooManyErrors)` INSTANTLY (0 ms),
+//!         preventing queue starvation!
+//!   - If consecutive 0xFFFF errors reach `temp_max_sensor_errors` (e.g. 10):
+//!       * The sensor is marked as `TemperatureSensorStatus::CommunicationError`.
+//!       * Subsequent queries are blocked instantly (0 ms).
+//!
+//! ============================================================================
+//! 2. AUTOMATIC SELF-HEALING MECHANISM:
+//! ============================================================================
+//! Temporary radio interference or low battery events should not permanently lock out
+//! a real sensor.
+//!
+//! Whenever a previously failing sensor successfully returns a temperature reading,
+//! its internal error counter is automatically decremented (`counter -= 1`).
+//! Once errors drop back below the threshold, the sensor fully self-heals without
+//! requiring client restart!
+//!
+//! ============================================================================
+//! 3. EXECUTION INSTRUCTIONS:
+//! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 07_get_temperatures_smart_blocking
+//!   cargo run --example 1_07_get_temperatures_smart_blocking
+//!
+//! Environment variables (optional):
+//!   SATEL_HOST - IP address of the panel (default: "192.168.1.100")
+//!   SATEL_PORT - TCP port (default: 7094)
+//!   SATEL_CODE - User access code (default: "1234")
 
 use satel_integra::{Config, ConnectionConfig, SatelError, SatelIntegra};
 use std::env;
@@ -65,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         for &zone_id in ZONES_WITHOUT_TEMP_SENSORS {
             let start = Instant::now();
 
-            match satel.get_zone_temperature_with_blocking(zone_id).await {
+            match satel.get_zone_temperature(zone_id).await {
                 Ok(temp) => {
                     let elapsed = start.elapsed();
                     println!(

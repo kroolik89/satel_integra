@@ -1,15 +1,46 @@
-//! Example 01: Connect to Satel Integra panel and query device & module versions.
+//! Example 1_01: Connect to Satel Integra panel and query device & module versions.
 //!
+//! ============================================================================
+//! 1. 2-STEP VERSION WORKFLOW (NETWORK FETCH VS CACHE READ):
+//! ============================================================================
+//! The client operates with a 2-step data model:
+//!
+//! STEP 1: Network Queries (Fetches version frames from panel & updates internal cache):
+//!   Command | Async Method                        | Description
+//!   --------+-------------------------------------+---------------------------------------------------
+//!   0x7E    | `satel.get_integra_version().await` | Query Integra alarm panel version, model, I/O capacity
+//!   0x7C    | `satel.get_ethm_version().await`    | Query ETHM-1 / INT-RS communication module version & caps
+//!
+//! STEP 2: Instant Cache Inspection (Synchronous, zero network overhead):
+//!   - `satel.get_cached_version()`:
+//!       Returns `Option<IntegraVersion>` from local memory cache without network latency.
+//!   - `satel.state_handle()`:
+//!       Access `state.integra_version` and `state.ethm_version` directly via `RwLock`.
+//!
+//! ============================================================================
+//! 2. HARDWARE & CAPABILITIES NOTES:
+//! ============================================================================
+//! - `IntegraVersion` fields:
+//!     * `model`: Derived panel model name (e.g. "INTEGRA 128", "INTEGRA 256 Plus").
+//!     * `firmware_version`: Firmware release string (e.g. "1.22 2023-05-10").
+//!     * `language`: Configured panel language.
+//!     * `io_count`: Maximum supported inputs/outputs (24, 32, 64, 128, 256).
+//!     * `stored_in_flash`: Whether the firmware runs from FLASH memory.
+//! - `EthmCapabilities` features:
+//!     * `support_32_byte_frames`: Module supports 256 I/O bitmasks (32-byte frames).
+//!     * `support_8_troubles_groups`: Module supports expanded 8 trouble groups (0x7F).
+//!     * `support_extended_arming_commands`: Module supports mode-specific partition arming.
+//!
+//! ============================================================================
+//! 3. EXECUTION INSTRUCTIONS:
+//! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 01_get_version
+//!   cargo run --example 1_01_get_version
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST - IP address of the panel / ETHM-1 Plus module (default: "192.168.1.100")
 //!   SATEL_PORT - TCP port (default: 7094)
 //!   SATEL_CODE - User access code (default: "1234")
-//!
-//! Example with custom IP on Windows (PowerShell):
-//!   $env:SATEL_HOST="10.20.30.5"; cargo run --example 01_get_version
 
 use satel_integra::{Config, ConnectionConfig, SatelIntegra};
 use std::env;
@@ -50,8 +81,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     satel.connect().await?;
     println!("Connected successfully!\n");
 
-    // 4. Query Integra alarm panel version
-    println!("Querying Integra panel version...");
+    // 4. STEP 1: Query Integra alarm panel version over the network (0x7E)
+    println!("--- Step 1: Querying Versions Over Network ---");
+    println!("Querying Integra panel version (0x7E)...");
     match satel.get_integra_version().await {
         Ok(ver) => {
             println!("  Panel model:      {}", ver.model);
@@ -67,8 +99,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!();
 
-    // 5. Query ETHM-1 Plus / INT-RS module version & capabilities
-    println!("Querying ETHM-1 / INT-RS communication module version & capabilities...");
+    // Query ETHM-1 Plus / INT-RS module version & capabilities (0x7C)
+    println!("Querying ETHM-1 / INT-RS communication module version & capabilities (0x7C)...");
     match satel.get_ethm_version().await {
         Ok(ethm) => {
             println!("  Module version:             {}", ethm.version_raw);
@@ -81,6 +113,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => {
             eprintln!("  Error reading module version: {}", e);
         }
+    }
+    println!();
+
+    // 5. STEP 2: Instant Cache Read (Zero Network I/O)
+    println!("--- Step 2: Instant Cache Verification (Zero Network I/O) ---");
+    if let Ok(Some(cached_ver)) = satel.get_cached_version() {
+        println!(
+            "  Cached Panel: {} (Firmware: {}, Read at: {})",
+            cached_ver.model,
+            cached_ver.firmware_version,
+            cached_ver.read_at.format("%H:%M:%S")
+        );
     }
     println!();
 

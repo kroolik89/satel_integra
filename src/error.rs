@@ -1,45 +1,45 @@
 use std::io;
 use thiserror::Error;
 
-/// Błędy, które mogą wystąpić podczas komunikacji z centralą Satel Integra.
+/// Errors that can occur during communication with the Satel Integra alarm panel.
 #[derive(Error, Debug)]
 pub enum SatelError {
-    #[error("Błąd wejścia/wyjścia: {0}")]
+    #[error("I/O error: {0}")]
     Io(#[from] io::Error),
-    #[error("Błąd portu szeregowego: {0}")]
+    #[error("Serial port error: {0}")]
     Serial(#[from] tokio_serial::Error),
-    #[error("Przekroczono czas oczekiwania (timeout)")]
+    #[error("Operation timed out")]
     Timeout,
-    #[error("Połączenie nie jest aktywne")]
+    #[error("Connection is not active")]
     NotConnected,
-    #[error("Strumień został zamknięty przez drugą stronę")]
+    #[error("Stream closed by remote host")]
     StreamClosed,
-    #[error("Połączenie zostało utracone, próba ponowienia może być możliwa")]
+    #[error("Connection lost, reconnect may be attempted")]
     ConnectionLost,
-    #[error("Nieprawidłowa suma kontrolna ramki")]
+    #[error("Invalid frame checksum (CRC)")]
     InvalidCrc,
-    #[error("Nieprawidłowy format ramki (np. zła stopka)")]
+    #[error("Invalid frame format")]
     InvalidFrame,
-    #[error("Wiadomość przedawniła się w kolejce")]
+    #[error("Message expired in buffer queue")]
     MessageExpired,
-    #[error("Worker został zatrzymany")]
+    #[error("Worker thread dropped")]
     WorkerDropped,
-    #[error("Połączenie/Worker zostało już uruchomione")]
+    #[error("Worker / Connection already active")]
     AlreadyConnected,
-    #[error("Błąd czujnika temperatury (0xFFFF)")]
+    #[error("Temperature sensor error (0xFFFF)")]
     TemperatureSensorError,
-    #[error("Prawdopodobny brak czujnika temperatury lub TimeOut")]
+    #[error("Temperature sensor missing or query timed out")]
     TemperatureNotSupportedOrTimeOut,
-    #[error("Zbyt wiele błędów odczytu czujnika temperatury - odczyt zablokowany")]
+    #[error("Too many temperature errors - sensor blocked to protect queue")]
     TempTooManyErrors,
-    #[error("Stan wewnętrzny biblioteki został uszkodzony (poisoned lock)")]
+    #[error("Internal state lock poisoned")]
     StatePoisoned,
-    #[error("Błędny kod użytkownika")]
+    #[error("Invalid user access code")]
     InvalidUserCode,
-    #[error("Brak dostępu / Nieprawidłowe ID")]
+    #[error("No access / Invalid ID")]
     NoAccess,
-    #[error("Nie można uzbroić (wymagane forsowanie)")]
+    #[error("Cannot arm (forced arming required)")]
     CanNotArm,
-    #[error("Nieznany błąd centrali (0xEF): {0}")]
+    #[error("Unknown panel result error (0xEF): {0}")]
     IntegraResultError(u8),
 }

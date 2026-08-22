@@ -389,7 +389,18 @@ impl SatelIntegra {
     }
 
     /// Pobiera temperaturę wejścia (zony) z centrali.
+    /// Jeśli w konfiguracji włączona jest opcja `temp_blocking_enabled` (domyślnie: true),
+    /// metoda automatycznie weryfikuje stan czujnika i blokuje zapytania do wadliwych czujników.
     pub async fn get_zone_temperature(&self, zone_id: u16) -> Result<ZoneTemperature, SatelError> {
+        if self.config.temp_blocking_enabled {
+            self.get_zone_temperature_with_blocking(zone_id).await
+        } else {
+            self.get_zone_temperature_raw(zone_id).await
+        }
+    }
+
+    /// Bezpośrednie zapytanie o temperaturę wejścia przez sieć (bez sprawdzania blokad).
+    pub async fn get_zone_temperature_raw(&self, zone_id: u16) -> Result<ZoneTemperature, SatelError> {
         tracing::info!("Pobieranie temperatury wejścia {}", zone_id);
 
         let cmd = vec![
@@ -471,10 +482,6 @@ impl SatelIntegra {
         &self,
         zone_id: u16,
     ) -> Result<ZoneTemperature, SatelError> {
-        if !self.config.temp_blocking_enabled {
-            return self.get_zone_temperature(zone_id).await;
-        }
-
         let zone_info = {
             let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
             state
@@ -511,7 +518,7 @@ impl SatelIntegra {
             }
         }
 
-        self.get_zone_temperature(zone_id).await
+        self.get_zone_temperature_raw(zone_id).await
     }
 
     /// Pobiera zagregowany status pojedynczego wejścia z cache.

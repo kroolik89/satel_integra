@@ -1,29 +1,43 @@
-//! Example 08: Controlling outputs (ON, OFF, TOGGLE) using global and per-call user codes.
+//! Example 2_01: Controlling outputs (ON, OFF, TOGGLE) using global and per-call user codes.
 //!
-//! PIN AUTHENTICATION MODES:
-//!   1. Global PIN (Config::user_code):
-//!      Best for background daemons and automated smart home integrations where
-//!      a single system PIN is configured once at startup.
+//! ============================================================================
+//! 1. OUTPUT CONTROL OVERVIEW & API METHODS:
+//! ============================================================================
+//! The Satel Integra panel allows authorized output control via three asynchronous methods:
 //!
-//!   2. Dynamic / Per-call PIN (Some("...")):
-//!      Created specifically for interactive applications (web portals, mobile apps,
-//!      multi-user systems) where you do NOT want to hardcode or store a static PIN
-//!      at startup. Instead, the end-user must provide their own personal PIN dynamically
-//!      for each individual operation.
+//!   Command | Async Method                                     | Description
+//!   --------+--------------------------------------------------+---------------------------------------------------
+//!   0x88    | `satel.set_output_on(output_id, pin).await`     | Turn specified output ON (Active)
+//!   0x89    | `satel.set_output_off(output_id, pin).await`    | Turn specified output OFF (Inactive)
+//!   0x91    | `satel.set_output_toggle(output_id, pin).await` | Toggle specified output state (Switch)
 //!
-//! IMPORTANT PROTOCOL NOTE:
-//!   Receiving a command confirmation ("Command received") from the ETHM-1 module
-//!   only indicates that the command packet was successfully received and queued
-//!   by the communication interface.
-//!   The Satel Integra protocol does NOT return error frames when:
-//!     - The user PIN is incorrect ("Invalid PIN"),
-//!     - The user lacks authority to control outputs ("No Access"),
-//!     - The target output is not configured for user switching (e.g. static power supply).
-//!   In all these unauthorized cases, the Integra panel silently ignores physical
-//!   relay execution and records an unauthorized access event in its internal event log.
+//! PIN Authentication Modes:
+//!   - Global PIN (`pin = None`):
+//!       Uses the system code pre-configured at startup in `Config.user_code`.
+//!       Ideal for automated background daemons and smart home integrations.
+//!   - Dynamic / Per-call PIN (`pin = Some("123456")`):
+//!       Allows passing a dynamic user PIN per operation.
+//!       Ideal for web portals and multi-user mobile apps where each end-user
+//!       authorizes actions with their own personal PIN.
 //!
+//! ============================================================================
+//! 2. PROTOCOL CONFIRMATION & SECURITY BEHAVIOR:
+//! ============================================================================
+//! Receiving a successful response (`Ok(())` / "Command received") indicates that
+//! the command packet was successfully received and queued by the ETHM-1 module.
+//!
+//! Important Satel protocol note: The panel does NOT return error frames when:
+//!   - The user PIN is invalid ("Wrong PIN"),
+//!   - The user lacks authority to switch outputs ("No Access"),
+//!   - The target output is not configured for user switching in DLOADX.
+//! In all unauthorized cases, the Integra panel silently drops the relay execution
+//! and logs an unauthorized access attempt to its internal event log.
+//!
+//! ============================================================================
+//! 3. EXECUTION INSTRUCTIONS:
+//! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 08_control_outputs
+//!   cargo run --example 2_01_control_outputs
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST           - IP address of the panel (default: "192.168.1.100")

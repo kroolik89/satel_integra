@@ -535,8 +535,8 @@ pub struct SatelState {
     pub outputs: Vec<Output>,
     pub partitions: Vec<Partition>,
     pub system_status: Option<SystemStatus>,
-    pub troubles: [bool; 320],
-    pub troubles_memory: [bool; 320],
+    pub troubles: [Vec<bool>; 8],
+    pub troubles_memory: [Vec<bool>; 8],
 }
 
 impl Default for SatelState {
@@ -568,8 +568,8 @@ impl SatelState {
             outputs,
             partitions,
             system_status: None,
-            troubles: [false; 320],
-            troubles_memory: [false; 320],
+            troubles: Default::default(),
+            troubles_memory: Default::default(),
         }
     }
 }

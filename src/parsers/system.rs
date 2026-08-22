@@ -103,21 +103,32 @@ pub fn process_rtc_and_status(frame: &[u8]) -> Result<SystemStatus, SatelError> 
         return Err(SatelError::InvalidFrame);
     }
 
-    // Bajty 0-5: BCD RTC (YYYY MM DD HH MM SS)
-    let year = 2000 + bcd_to_u8(data[0]) as i32;
-    let month = bcd_to_u8(data[1]) as u32;
-    let day = bcd_to_u8(data[2]) as u32;
-    let hour = bcd_to_u8(data[3]) as u32;
-    let min = bcd_to_u8(data[4]) as u32;
-    let sec = bcd_to_u8(data[5]) as u32;
+    // Format 0x1A: [YYYY_hi, YYYY_lo, MM, DD, HH, MM, SS, Status/DayOfWeek, ...]
+    let (year, month, day, hour, min, sec, status_byte) = if data.len() >= 8 {
+        let y = (bcd_to_u8(data[0]) as i32 * 100) + bcd_to_u8(data[1]) as i32;
+        let m = bcd_to_u8(data[2]) as u32;
+        let d = bcd_to_u8(data[3]) as u32;
+        let h = bcd_to_u8(data[4]) as u32;
+        let min = bcd_to_u8(data[5]) as u32;
+        let s = bcd_to_u8(data[6]) as u32;
+        let status = data[7];
+        (y, m, d, h, min, s, status)
+    } else {
+        let y = 2000 + bcd_to_u8(data[0]) as i32;
+        let m = bcd_to_u8(data[1]) as u32;
+        let d = bcd_to_u8(data[2]) as u32;
+        let h = bcd_to_u8(data[3]) as u32;
+        let min = bcd_to_u8(data[4]) as u32;
+        let s = bcd_to_u8(data[5]) as u32;
+        let status = data[6];
+        (y, m, d, h, min, s, status)
+    };
 
     let rtc = Local
         .with_ymd_and_hms(year, month, day, hour, min, sec)
         .single()
         .unwrap_or_else(Local::now);
 
-    // Bajt 6: Status
-    let status_byte = data[6];
     let service_mode = (status_byte & (1 << 7)) != 0;
     let troubles_present = (status_byte & (1 << 6)) != 0;
     let troubles_memory = (status_byte & (1 << 5)) != 0;
@@ -135,19 +146,15 @@ fn bcd_to_u8(bcd: u8) -> u8 {
 }
 
 /// Przetwarza całą ramkę odpowiedzi na komendy awarii (0x1B-0x31).
-/// Zwraca wektor 40 bitów (5 bajtów danych).
+/// Zwraca wektor bitów dla wszystkich bajtów danych w ramce.
 pub fn process_troubles(frame: &[u8]) -> Result<Vec<bool>, SatelError> {
     if frame.is_empty() {
         return Err(SatelError::InvalidFrame);
     }
 
     let data = &frame[1..];
-    if data.len() < 5 {
-        return Err(SatelError::InvalidFrame);
-    }
-
-    let mut states = Vec::with_capacity(40);
-    for &byte in data.iter().take(5) {
+    let mut states = Vec::with_capacity(data.len() * 8);
+    for &byte in data {
         for bit in 0..8 {
             states.push((byte & (1 << bit)) != 0);
         }
@@ -183,24 +190,24 @@ pub fn process_auto_read_response(
     let mut total_requested = 0;
 
     let defs = vec![
-        ("Naruszenia wejść (0x00)", 0, config.auto_read_zones_violation),
-        ("Sabotaże wejść (0x01)", 0, config.auto_read_zones_tamper),
-        ("Alarmy wejść (0x02)", 0, config.auto_read_zones_alarm),
-        ("Alarmy sabotażowe wejść (0x03)", 0, config.auto_read_zones_tamper_alarm),
-        ("Pamięć alarmów wejść (0x04)", 0, config.auto_read_zones_alarm_memory),
-        ("Pamięć al. sabot. wejść (0x05)", 0, config.auto_read_zones_tamper_alarm_memory),
-        ("Blokady wejść (0x06)", 0, config.auto_read_zones_bypass),
-        ("Awarie 'brak naruszenia' (0x07)", 0, config.auto_read_zones_no_violation_trouble),
-        ("Awarie 'długie narusz.' (0x08)", 1, config.auto_read_zones_long_violation_trouble),
-        ("Uzbrojenie stref (0x09)", 1, config.auto_read_partitions_armed_suppressed),
-        ("Fakt. uzbrojenie stref (0x0A)", 1, config.auto_read_partitions_armed_really),
-        ("Alarmy stref (0x13)", 2, config.auto_read_partitions_alarm),
-        ("Pamięć alarmów stref (0x15)", 2, config.auto_read_partitions_alarm_memory),
-        ("Czas na wejście (0x0E)", 1, config.auto_read_partitions_entry_time),
-        ("Czas na wyjście (0x0F, 0x10)", 1, config.auto_read_partitions_exit_time),
-        ("Stan wyjść (0x17)", 2, config.auto_read_outputs_state),
-        ("Awarie systemu (0x1A-0x30)", 3, config.auto_read_system_troubles),
-        ("Pamięć awarii (0x20-0x31)", 4, config.auto_read_troubles_memory),
+        ("Zone violations (0x00)", 0, config.auto_read_zones_violation),
+        ("Zone tampers (0x01)", 0, config.auto_read_zones_tamper),
+        ("Zone alarms (0x02)", 0, config.auto_read_zones_alarm),
+        ("Zone tamper alarms (0x03)", 0, config.auto_read_zones_tamper_alarm),
+        ("Zone alarm memory (0x04)", 0, config.auto_read_zones_alarm_memory),
+        ("Zone tamper alarm memory (0x05)", 0, config.auto_read_zones_tamper_alarm_memory),
+        ("Zone bypasses (0x06)", 0, config.auto_read_zones_bypass),
+        ("Zone 'no violation' trouble (0x07)", 0, config.auto_read_zones_no_violation_trouble),
+        ("Zone 'long violation' trouble (0x08)", 1, config.auto_read_zones_long_violation_trouble),
+        ("Partitions armed suppressed (0x09)", 1, config.auto_read_partitions_armed_suppressed),
+        ("Partitions armed really (0x0A)", 1, config.auto_read_partitions_armed_really),
+        ("Partitions alarm (0x13)", 2, config.auto_read_partitions_alarm),
+        ("Partitions alarm memory (0x15)", 2, config.auto_read_partitions_alarm_memory),
+        ("Partitions entry time (0x0E)", 1, config.auto_read_partitions_entry_time),
+        ("Partitions exit time (0x0F, 0x10)", 1, config.auto_read_partitions_exit_time),
+        ("Outputs state (0x17)", 2, config.auto_read_outputs_state),
+        ("System troubles (0x1A-0x30)", 3, config.auto_read_system_troubles),
+        ("Troubles memory (0x20-0x31)", 4, config.auto_read_troubles_memory),
     ];
 
     for (name, byte_idx, requested) in defs {
@@ -231,14 +238,11 @@ pub fn process_auto_read_response(
     }
 }
 
-/// Mapuje globalny indeks bitu awarii (0-319) na nazwany typ `TroubleType`.
-pub fn map_trouble_bit(index: u16) -> TroubleType {
-    let part = (index / 40) as u8;
-    let bit = (index % 40) as u8;
-
+/// Mapuje indeks części i bitu awarii na nazwany typ `TroubleType`.
+pub fn map_trouble_part_bit(part: u8, bit: u16) -> TroubleType {
     match (part, bit) {
         // Part 1 (0x1B)
-        (0, 0..=15) => TroubleType::OutTrouble(bit + 1),
+        (0, 0..=15) => TroubleType::OutTrouble(bit as u8 + 1),
         (0, 16) => TroubleType::MainBoardAcLoss,
         (0, 17) => TroubleType::MainBoardBatteryLow,
         (0, 18) => TroubleType::MainBoardBatteryMissing,
@@ -247,26 +251,28 @@ pub fn map_trouble_bit(index: u16) -> TroubleType {
         (0, 21) => TroubleType::RtcLoss,
         (0, 22) => TroubleType::PrinterTrouble,
         (0, 23) => TroubleType::MainBoardDataBusError,
-        (0, 24..=31) => TroubleType::ExpanderAcLoss(bit - 24 + 1),
-        (0, 32..=39) => TroubleType::ExpanderBatteryLow(bit - 32 + 1),
+        (0, 24..=31) => TroubleType::ExpanderAcLoss((bit - 24 + 1) as u8),
+        (0, 32..=39) => TroubleType::ExpanderBatteryLow((bit - 32 + 1) as u8),
 
         // Part 2 (0x1C)
-        (1, 0..=7) => TroubleType::ExpanderAcLoss(bit + 9),
-        (1, 8..=15) => TroubleType::ExpanderBatteryLow(bit - 8 + 9),
-        (1, 16..=23) => TroubleType::ExpanderAcLoss(bit - 16 + 17),
-        (1, 24..=31) => TroubleType::ExpanderBatteryLow(bit - 24 + 17),
-        (1, 32..=39) => TroubleType::ExpanderAcLoss(bit - 32 + 25),
+        (1, 0..=7) => TroubleType::ExpanderAcLoss((bit + 9) as u8),
+        (1, 8..=15) => TroubleType::ExpanderBatteryLow((bit - 8 + 9) as u8),
+        (1, 16..=23) => TroubleType::ExpanderAcLoss((bit - 16 + 17) as u8),
+        (1, 24..=31) => TroubleType::ExpanderBatteryLow((bit - 24 + 17) as u8),
+        (1, 32..=39) => TroubleType::ExpanderAcLoss((bit - 32 + 25) as u8),
 
         // Part 3 (0x1D)
-        (2, 0..=7) => TroubleType::ExpanderBatteryLow(bit + 25),
-        (2, 8..=39) => TroubleType::ExpanderBatteryMissing(bit - 8 + 1),
+        (2, 0..=7) => TroubleType::ExpanderBatteryLow((bit + 25) as u8),
+        (2, 8..=39) => TroubleType::ExpanderBatteryMissing((bit - 8 + 1) as u8),
+        (2, 40..=127) => TroubleType::ExpanderBatteryMissing((bit - 8 + 1) as u8),
 
         // Part 4 (0x1E)
-        (3, 0..=31) => TroubleType::ExpanderOutOverload(bit + 1),
-        (3, 32..=39) => TroubleType::ExpanderDataBusError(bit - 32 + 1),
+        (3, 0..=31) => TroubleType::ExpanderOutOverload((bit + 1) as u8),
+        (3, 32..=39) => TroubleType::ExpanderDataBusError((bit - 32 + 1) as u8),
+        (3, 40..=127) => TroubleType::ExpanderDataBusError((bit - 32 + 1) as u8),
 
         // Part 5 (0x1F)
-        (4, 0..=23) => TroubleType::ExpanderDataBusError(bit + 9),
+        (4, 0..=23) => TroubleType::ExpanderDataBusError((bit + 9) as u8),
         (4, 24) => TroubleType::EthmMonitoringStation1Error,
         (4, 25) => TroubleType::EthmMonitoringStation2Error,
         (4, 26) => TroubleType::EthmDloadxConnectionError,
@@ -275,17 +281,24 @@ pub fn map_trouble_bit(index: u16) -> TroubleType {
         (4, 29) => TroubleType::GsmMonitoringStation1Error,
         (4, 30) => TroubleType::GsmMonitoringStation2Error,
         (4, 31) => TroubleType::ServiceAccessBlocked,
-        (4, 32..=39) => TroubleType::ZoneTrouble(bit as u16 - 32 + 1),
+        (4, 32..=39) => TroubleType::ZoneTrouble(bit - 32 + 1),
 
         // Part 6 (0x2C)
-        (5, bit) => TroubleType::ZoneTrouble(bit as u16 + 9),
+        (5, bit) => TroubleType::ZoneTrouble(bit + 9),
 
         // Part 7 (0x2D)
-        (6, bit) => TroubleType::ZoneTrouble(bit as u16 + 49),
+        (6, bit) => TroubleType::ZoneTrouble(bit + 49),
 
         // Part 8 (0x30)
-        (7, bit) => TroubleType::ZoneTrouble(bit as u16 + 89),
+        (7, bit) => TroubleType::ZoneTrouble(bit + 89),
 
-        _ => TroubleType::GenericTrouble { part, bit },
+        _ => TroubleType::GenericTrouble { part, bit: bit as u8 },
     }
+}
+
+/// Mapuje globalny indeks bitu awarii na nazwany typ `TroubleType`.
+pub fn map_trouble_bit(index: u16) -> TroubleType {
+    let part = (index / 40) as u8;
+    let bit = index % 40;
+    map_trouble_part_bit(part, bit)
 }

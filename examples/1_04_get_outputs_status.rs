@@ -1,7 +1,39 @@
-//! Example 04: Query real-time status of all outputs (ON / OFF) from Satel Integra.
+//! Example 1_04: Query real-time status of all outputs (ON / OFF) from Satel Integra.
 //!
+//! ============================================================================
+//! 1. 2-STEP OUTPUTS STATUS WORKFLOW (NETWORK FETCH VS CACHE READ):
+//! ============================================================================
+//! The client operates with a 2-step data model:
+//!
+//! STEP 1: Network Query (Fetches all outputs state from panel & updates internal cache):
+//!   Command | Async Method                        | Description
+//!   --------+-------------------------------------+---------------------------------------------------
+//!   0x17    | `satel.get_outputs_state().await`   | Query real-time state of all outputs (ON / OFF)
+//!
+//! STEP 2: Instant Cache Inspection (Synchronous, zero network overhead):
+//!   - `satel.get_cached_output_name(output_id)`:
+//!       Returns `Option<OutputName>` from local cache.
+//!   - `satel.state_handle()`:
+//!       Returns an `RwLock` read handle to entire internal `SatelState`.
+//!       Access `state.outputs[0..io_count]` for individual `OutputStatus` items containing:
+//!         * `id`: Output number (1..=256)
+//!         * `state`: Boolean status (`true` = ON/Active, `false` = OFF/Inactive)
+//!         * `state_read_at`: Timestamp of the last successful state update
+//!         * `output_name`: Optional cached output name
+//!
+//! ============================================================================
+//! 2. HARDWARE & LOGICAL OUTPUT NOTES:
+//! ============================================================================
+//! - In Integra panels, outputs can represent sirens, strobe lights, locks, heating
+//!   valves, lighting relays, or internal logic gates used by the automation system.
+//! - The number of available outputs depends on the panel model (e.g. Integra 24: 20 outputs,
+//!   Integra 64: 64 outputs, Integra 128: 128 outputs, Integra 256 Plus: 256 outputs).
+//!
+//! ============================================================================
+//! 3. EXECUTION INSTRUCTIONS:
+//! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 04_get_outputs_status
+//!   cargo run --example 1_04_get_outputs_status
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST - IP address of the panel (default: "192.168.1.100")
@@ -44,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 3. Query panel version to determine IO capacity
     let version = satel.get_integra_version().await?;
     let io_count = version.io_count;
-    println!("Integra panel has {} outputs.\n", io_count);
+    println!("Integra panel model: {}, supported outputs: {}\n", version.model, io_count);
 
     // 4. Fetch real-time state of all outputs
     println!("Fetching real-time output states from panel...");
