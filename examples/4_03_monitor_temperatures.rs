@@ -1,4 +1,4 @@
-//! Example 3_03: Real-time event monitoring for wireless temperature sensors (ABAX 2).
+﻿//! Example 4_03: Real-time event monitoring for wireless temperature sensors (ABAX 2).
 //!
 //! ============================================================================
 //! 1. EVENT STREAMING OVERVIEW & FILTERED DOMAIN (TEMPERATURES):
@@ -26,7 +26,7 @@
 //! 3. EXECUTION INSTRUCTIONS:
 //! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 3_03_monitor_temperatures
+//!   cargo run --example 4_03_monitor_temperatures
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST - IP address of the panel (default: "192.168.1.100")

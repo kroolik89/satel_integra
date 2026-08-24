@@ -1,4 +1,4 @@
-//! Example 1_06: Query temperature from zones with connected wireless/wired sensors.
+﻿//! Example 2_06: Query temperature from zones with connected wireless/wired sensors.
 //!
 //! ============================================================================
 //! 1. 2-STEP TEMPERATURE WORKFLOW (NETWORK FETCH VS CACHE READ):
@@ -31,7 +31,7 @@
 //! 3. EXECUTION INSTRUCTIONS:
 //! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 1_06_get_temperatures
+//!   cargo run --example 2_06_get_temperatures
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST - IP address of the panel (default: "192.168.1.100")

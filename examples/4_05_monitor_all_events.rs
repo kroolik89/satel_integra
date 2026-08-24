@@ -1,4 +1,4 @@
-//! Example 3_05: Comprehensive real-time event monitor handling all SatelEvent variants.
+﻿//! Example 4_05: Comprehensive real-time event monitor handling all SatelEvent variants.
 //!
 //! ============================================================================
 //! 1. EVENT STREAMING OVERVIEW & EXHAUSTIVE MATCHING:
@@ -38,7 +38,7 @@
 //! 3. EXECUTION INSTRUCTIONS:
 //! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 3_05_monitor_all_events
+//!   cargo run --example 4_05_monitor_all_events
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST - IP address of the panel (default: "192.168.1.100")

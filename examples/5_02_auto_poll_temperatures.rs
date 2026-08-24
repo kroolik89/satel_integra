@@ -1,4 +1,4 @@
-//! Example 4_02: Automated cyclic background polling for wireless/wired temperatures.
+﻿//! Example 5_02: Automated cyclic background polling for wireless/wired temperatures.
 //!
 //! ============================================================================
 //! 1. TEMPERATURE POLLING OVERVIEW & ARCHITECTURE:
@@ -34,7 +34,7 @@
 //! 3. EXECUTION INSTRUCTIONS:
 //! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 4_02_auto_poll_temperatures
+//!   cargo run --example 5_02_auto_poll_temperatures
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST - IP address of the panel (default: "192.168.1.100")

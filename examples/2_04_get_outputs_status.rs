@@ -1,4 +1,4 @@
-//! Example 1_04: Query real-time status of all outputs (ON / OFF) from Satel Integra.
+﻿//! Example 2_04: Query real-time status of all outputs (ON / OFF) from Satel Integra.
 //!
 //! ============================================================================
 //! 1. 2-STEP OUTPUTS STATUS WORKFLOW (NETWORK FETCH VS CACHE READ):
@@ -33,7 +33,7 @@
 //! 3. EXECUTION INSTRUCTIONS:
 //! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 1_04_get_outputs_status
+//!   cargo run --example 2_04_get_outputs_status
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST - IP address of the panel (default: "192.168.1.100")

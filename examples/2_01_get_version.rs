@@ -1,4 +1,4 @@
-//! Example 1_01: Connect to Satel Integra panel and query device & module versions.
+﻿//! Example 2_01: Connect to Satel Integra panel and query device & module versions.
 //!
 //! ============================================================================
 //! 1. 2-STEP VERSION WORKFLOW (NETWORK FETCH VS CACHE READ):
@@ -35,7 +35,7 @@
 //! 3. EXECUTION INSTRUCTIONS:
 //! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 1_01_get_version
+//!   cargo run --example 2_01_get_version
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST - IP address of the panel / ETHM-1 Plus module (default: "192.168.1.100")

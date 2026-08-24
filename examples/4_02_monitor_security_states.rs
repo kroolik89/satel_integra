@@ -1,4 +1,4 @@
-//! Example 3_02: Real-time event monitoring for security states (Zones, Outputs, Partitions).
+﻿//! Example 4_02: Real-time event monitoring for security states (Zones, Outputs, Partitions).
 //!
 //! ============================================================================
 //! 1. EVENT STREAMING OVERVIEW & FILTERED DOMAIN (SECURITY STATES):
@@ -38,7 +38,7 @@
 //! 3. EXECUTION INSTRUCTIONS:
 //! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 3_02_monitor_security_states
+//!   cargo run --example 4_02_monitor_security_states
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST - IP address of the panel (default: "192.168.1.100")

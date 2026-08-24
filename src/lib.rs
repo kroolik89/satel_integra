@@ -31,6 +31,7 @@
 // --- Internal modules (private) ---
 pub(crate) mod auto_requester;
 pub(crate) mod client_internal;
+pub(crate) mod encryption;
 pub(crate) mod polling_worker;
 pub(crate) mod worker;
 

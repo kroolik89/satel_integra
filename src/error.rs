@@ -42,4 +42,10 @@ pub enum SatelError {
     CanNotArm,
     #[error("Unknown panel result error (0xEF): {0}")]
     IntegraResultError(u8),
+    #[error("Invalid integration key: {0}")]
+    InvalidIntegrationKey(String),
+    #[error("Encryption error: {0}")]
+    EncryptionError(String),
+    #[error("Encrypted data length is not a multiple of AES block size (16 bytes), got {0} bytes")]
+    InvalidEncryptedDataLength(usize),
 }

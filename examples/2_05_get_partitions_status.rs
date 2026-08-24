@@ -1,4 +1,4 @@
-//! Example 1_05: Query real-time status of all partitions (arming, alarms, entry/exit times).
+﻿//! Example 2_05: Query real-time status of all partitions (arming, alarms, entry/exit times).
 //!
 //! ============================================================================
 //! 1. 2-STEP PARTITIONS STATUS WORKFLOW (NETWORK FETCH VS CACHE READ):
@@ -46,7 +46,7 @@
 //! 3. EXECUTION INSTRUCTIONS:
 //! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 1_05_get_partitions_status
+//!   cargo run --example 2_05_get_partitions_status
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST - IP address of the panel (default: "192.168.1.100")

@@ -1,4 +1,4 @@
-//! Example 3_04: Real-time event monitoring for system troubles and trouble memory.
+﻿//! Example 4_04: Real-time event monitoring for system troubles and trouble memory.
 //!
 //! ============================================================================
 //! 1. EVENT STREAMING OVERVIEW & FILTERED DOMAIN (SYSTEM TROUBLES):
@@ -28,7 +28,7 @@
 //! 3. EXECUTION INSTRUCTIONS:
 //! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 3_04_monitor_troubles
+//!   cargo run --example 4_04_monitor_troubles
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST - IP address of the panel (default: "192.168.1.100")

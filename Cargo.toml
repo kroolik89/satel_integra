@@ -1,6 +1,6 @@
 [package]
 name = "satel_integra"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2021"
 authors = ["Marcin Król <krol.marcin1989@gmail.com>"]
 description = "Asynchronous Rust client for Satel Integra alarm control panels via ETHM-1 Plus (TCP/IP) and UART (RS-232)."
@@ -29,3 +29,4 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["chrono"] }
 chrono = "0.4"
 encoding_rs = "0.8"
+aes = "0.8"

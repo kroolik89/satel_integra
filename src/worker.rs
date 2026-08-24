@@ -374,6 +374,8 @@ impl SatelCommunicationWorker {
         tracing::info!("Attempting physical connection...");
 
         let connection_config = self.config.connection.clone();
+        let encryption = self.config.encryption;
+        let integration_key = self.config.integration_key.clone();
 
         let stream_result = timeout(conn_timeout, async move {
             match connection_config {
@@ -381,7 +383,19 @@ impl SatelCommunicationWorker {
                     let stream = TcpStream::connect((host.as_str(), port))
                         .await
                         .map_err(SatelError::from)?;
-                    let boxed: Box<dyn AsyncReadWrite> = Box::new(stream);
+                    let boxed: Box<dyn AsyncReadWrite> = if encryption {
+                        let key_str = integration_key.as_deref().ok_or_else(|| {
+                            SatelError::InvalidIntegrationKey(
+                                "encryption is enabled but integration_key is not set".into(),
+                            )
+                        })?;
+                        let aes_key = crate::encryption::derive_aes_key(key_str);
+                        tracing::info!("TCP connection established with AES-192 encryption");
+                        Box::new(crate::encryption::EncryptedStream::new(stream, aes_key))
+                    } else {
+                        tracing::info!("TCP connection established (plaintext)");
+                        Box::new(stream)
+                    };
                     Ok::<Box<dyn AsyncReadWrite>, SatelError>(boxed)
                 }
                 ConnectionConfig::Uart { path, baud_rate } => {

@@ -1,4 +1,4 @@
-//! Example 2_02: Arming, disarming, and clearing alarms in partitions using global and per-call user codes.
+﻿//! Example 3_02: Arming, disarming, and clearing alarms in partitions using global and per-call user codes.
 //!
 //! ============================================================================
 //! 1. PARTITION CONTROL OVERVIEW & API METHODS:
@@ -40,7 +40,7 @@
 //! 3. EXECUTION INSTRUCTIONS:
 //! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 2_02_arm_disarm_partitions
+//!   cargo run --example 3_02_arm_disarm_partitions
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST           - IP address of the panel (default: "192.168.1.100")

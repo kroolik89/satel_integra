@@ -1,4 +1,4 @@
-//! Example 3_01: Asynchronous event stream monitoring for System Info, Names, and RTC clock.
+﻿//! Example 4_01: Asynchronous event stream monitoring for System Info, Names, and RTC clock.
 //!
 //! ============================================================================
 //! 1. EVENT STREAMING OVERVIEW & FILTERED DOMAIN (SYSTEM INFO):
@@ -43,7 +43,7 @@
 //! 3. EXECUTION INSTRUCTIONS:
 //! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 3_01_monitor_system_info
+//!   cargo run --example 4_01_monitor_system_info
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST - IP address of the panel (default: "192.168.1.100")

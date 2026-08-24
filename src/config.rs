@@ -1,3 +1,4 @@
+use crate::error::SatelError;
 use serde::Deserialize;
 
 /// Main client configuration structure.
@@ -5,6 +6,18 @@ use serde::Deserialize;
 pub struct Config {
     /// Connection transport configuration (TCP/IP or UART/RS-232).
     pub connection: ConnectionConfig,
+
+    /// Whether to enable AES-192 encrypted communication with ETHM-1 Plus.
+    /// Requires `integration_key`. Only supported for TCP connections.
+    /// Default: false.
+    #[serde(default = "default_encryption")]
+    pub encryption: bool,
+
+    /// Integration encryption key (up to 12 ASCII characters).
+    /// Configured in DLOADX (Structure -> Modules -> ETHM-1 -> Integration key).
+    /// Required when `encryption = true`. Stored in memory in plaintext.
+    #[serde(default)]
+    pub integration_key: Option<String>,
 
     /// Network / stream read timeout in milliseconds.
     #[serde(default = "default_read_timeout_ms")]
@@ -196,6 +209,39 @@ pub struct Config {
 }
 
 impl Config {
+    /// Validates the configuration consistency.
+    ///
+    /// Checks if encryption settings are valid:
+    /// - If encryption is enabled, `integration_key` must be specified.
+    /// - `integration_key` must be 1-12 ASCII characters.
+    /// - Encryption is only supported for TCP connections, not UART.
+    pub fn validate(&self) -> Result<(), SatelError> {
+        if self.encryption {
+            let key = self.integration_key.as_deref().ok_or_else(|| {
+                SatelError::InvalidIntegrationKey(
+                    "encryption is enabled but integration_key is not set".into(),
+                )
+            })?;
+            if key.is_empty() || key.len() > 12 {
+                return Err(SatelError::InvalidIntegrationKey(format!(
+                    "integration_key must be 1-12 characters long, got {}",
+                    key.len()
+                )));
+            }
+            if !key.is_ascii() {
+                return Err(SatelError::InvalidIntegrationKey(
+                    "integration_key must contain only ASCII characters".into(),
+                ));
+            }
+            if matches!(self.connection, ConnectionConfig::Uart { .. }) {
+                return Err(SatelError::InvalidIntegrationKey(
+                    "encryption is only supported for TCP connections (ETHM-1 Plus), not UART (INT-RS)".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Returns true if any auto-read (0x7F push notification) category is enabled.
     pub fn is_auto_read_enabled(&self) -> bool {
         self.auto_read_zones_violation
@@ -228,6 +274,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             connection: ConnectionConfig::default(),
+            encryption: default_encryption(),
+            integration_key: None,
             read_timeout_ms: default_read_timeout_ms(),
             write_timeout_ms: default_write_timeout_ms(),
             temp_read_timeout_ms: default_temp_read_timeout_ms(),
@@ -277,6 +325,7 @@ impl Default for Config {
     }
 }
 
+fn default_encryption() -> bool { false }
 fn default_emit_unchanged() -> bool { false }
 fn default_polling_temperatures() -> bool { false }
 fn default_polling_temperatures_interval_minutes() -> u64 { 1 }
@@ -311,5 +360,91 @@ impl Default for ConnectionConfig {
             host: "localhost".to_string(),
             port: 7094,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_default_validation() {
+        let config = Config::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_config_encryption_without_key() {
+        let mut config = Config::default();
+        config.encryption = true;
+        config.integration_key = None;
+        assert!(matches!(
+            config.validate(),
+            Err(SatelError::InvalidIntegrationKey(_))
+        ));
+    }
+
+    #[test]
+    fn test_config_encryption_empty_key() {
+        let mut config = Config::default();
+        config.encryption = true;
+        config.integration_key = Some("".to_string());
+        assert!(matches!(
+            config.validate(),
+            Err(SatelError::InvalidIntegrationKey(_))
+        ));
+    }
+
+    #[test]
+    fn test_config_encryption_key_too_long() {
+        let mut config = Config::default();
+        config.encryption = true;
+        config.integration_key = Some("1234567890123".to_string()); // 13 chars
+        assert!(matches!(
+            config.validate(),
+            Err(SatelError::InvalidIntegrationKey(_))
+        ));
+    }
+
+    #[test]
+    fn test_config_encryption_key_non_ascii() {
+        let mut config = Config::default();
+        config.encryption = true;
+        config.integration_key = Some("KluczZażółć".to_string());
+        assert!(matches!(
+            config.validate(),
+            Err(SatelError::InvalidIntegrationKey(_))
+        ));
+    }
+
+    #[test]
+    fn test_config_encryption_uart_unsupported() {
+        let mut config = Config::default();
+        config.connection = ConnectionConfig::Uart {
+            path: "COM1".to_string(),
+            baud_rate: 19200,
+        };
+        config.encryption = true;
+        config.integration_key = Some("MyKey123".to_string());
+        assert!(matches!(
+            config.validate(),
+            Err(SatelError::InvalidIntegrationKey(_))
+        ));
+    }
+
+    #[test]
+    fn test_config_encryption_valid() {
+        let mut config = Config::default();
+        config.encryption = true;
+        config.integration_key = Some("MyKey123".to_string());
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_config_encryption_disabled_ignores_invalid_key() {
+        let mut config = Config::default();
+        config.encryption = false;
+        config.integration_key = Some("This key is too long but encryption is off".to_string());
+        assert!(config.validate().is_ok());
     }
 }

@@ -1,4 +1,4 @@
-//! Example 4_01: Automated real-time state streaming via ETHM-1 Auto-Push (Command 0x7F).
+﻿//! Example 5_01: Automated real-time state streaming via ETHM-1 Auto-Push (Command 0x7F).
 //!
 //! ============================================================================
 //! 1. AUTO-PUSH / AUTO-READ OVERVIEW & HARDWARE REGISTRATION (0x7F):
@@ -35,7 +35,7 @@
 //! 3. EXECUTION INSTRUCTIONS:
 //! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 4_01_auto_read_push
+//!   cargo run --example 5_01_auto_read_push
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST - IP address of the panel (default: "192.168.1.100")

@@ -1,4 +1,4 @@
-//! Example 1_03: Query real-time status of all zones with Software State Inversion demo.
+﻿//! Example 2_03: Query real-time status of all zones with Software State Inversion demo.
 //!
 //! ============================================================================
 //! 1. 2-STEP ZONE STATUS WORKFLOW (NETWORK FETCH VS CACHE READ):
@@ -57,7 +57,7 @@
 //! 3. EXECUTION INSTRUCTIONS:
 //! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 1_03_get_zones_status
+//!   cargo run --example 2_03_get_zones_status
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST - IP address of the panel (default: "192.168.1.100")

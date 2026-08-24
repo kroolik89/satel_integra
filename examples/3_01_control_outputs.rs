@@ -1,4 +1,4 @@
-//! Example 2_01: Controlling outputs (ON, OFF, TOGGLE) using global and per-call user codes.
+﻿//! Example 3_01: Controlling outputs (ON, OFF, TOGGLE) using global and per-call user codes.
 //!
 //! ============================================================================
 //! 1. OUTPUT CONTROL OVERVIEW & API METHODS:
@@ -37,7 +37,7 @@
 //! 3. EXECUTION INSTRUCTIONS:
 //! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 2_01_control_outputs
+//!   cargo run --example 3_01_control_outputs
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST           - IP address of the panel (default: "192.168.1.100")

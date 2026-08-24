@@ -68,6 +68,8 @@ impl SatelIntegra {
 
     /// Connects to the panel and spawns background tasks (actor worker, auto-requester, poller).
     pub async fn connect(&self) -> Result<(), SatelError> {
+        self.config.validate()?;
+
         let maybe_worker = {
             let mut worker_lock = self.worker.lock().unwrap();
             worker_lock.take()

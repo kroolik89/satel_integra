@@ -1,36 +1,34 @@
-//! Example 1_02: Dynamically query ALL names of partitions, zones, and outputs based on panel capacity.
+﻿//! Example 2_02: Dynamically query ALL names of partitions, zones, and outputs based on panel capacity.
 //!
 //! ============================================================================
-//! 1. 2-STEP SYSTEM NAMES WORKFLOW (NETWORK FETCH VS CACHE READ):
+//! 1. ADAPTIVE NAME QUERY WORKFLOW:
 //! ============================================================================
-//! The client operates with a 2-step data model:
+//! The Integra protocol stores user-assigned UTF-8 names (16 characters max each)
+//! for physical/logical devices inside the panel (Command 0xEE).
 //!
-//! STEP 1: Network Queries (Fetches 16-character names from panel & updates internal cache):
-//!   Command | Async Method                        | Device Type | Description
-//!   --------+-------------------------------------+-------------+-------------------------------------
-//!   0xEE    | `satel.get_partition_name(id).await`| 0x00        | Query user-configured partition name
-//!   0xEE    | `satel.get_zone_name(id).await`     | 0x01        | Query user-configured zone (input) name
-//!   0xEE    | `satel.get_output_name(id).await`   | 0x02        | Query user-configured output name
+//! Name queries are executed asynchronously on demand:
+//!   - `satel.get_zone_name(id).await`       -> Zone name (e.g. "Salon Ruch")
+//!   - `satel.get_partition_name(id).await`  -> Partition name (e.g. "Dom Parter")
+//!   - `satel.get_output_name(id).await`     -> Output name (e.g. "Syrena Zewn.")
 //!
-//! STEP 2: Instant Cache Inspection (Synchronous, zero network overhead):
-//!   - `satel.get_cached_partition_name(id)`: Returns `Option<PartitionName>` from local cache.
-//!   - `satel.get_cached_zone_name(id)`:      Returns `Option<ZoneName>` from local cache.
-//!   - `satel.get_cached_output_name(id)`:    Returns `Option<OutputName>` from local cache.
-//!   - `satel.state_handle()`:                Direct `RwLock` access to full `SatelState`.
+//! This example queries panel capacity (0x7E) first, then iterates over active IDs:
+//!   - Partitions: 1..=partitions_count (4 for Integra 24, 8 for 32/64, 16 for 128, 32 for 256)
+//!   - Zones (Inputs): 1..=io_count (24, 32, 64, 128, or 256)
+//!   - Outputs: 1..=io_count (24, 32, 64, 128, or 256)
 //!
 //! ============================================================================
-//! 2. PROTOCOL SPECIFICS & CHARACTER ENCODING:
+//! 2. CACHE ACCESS:
 //! ============================================================================
-//! - Names are stored in the panel as 16-byte fixed strings in national codepage (CP1250 / ISO-8859-2).
-//! - The library automatically trims trailing whitespace and converts characters to UTF-8 Rust `String`.
-//! - If an object is not configured or unassigned, the panel responds with `0xEF` (ResultCode),
-//!   which the library transparently converts into an empty string name.
+//! After fetching names over the network, names are stored in local memory cache:
+//!   - `satel.get_cached_zone_name(id)`
+//!   - `satel.get_cached_partition_name(id)`
+//!   - `satel.get_cached_output_name(id)`
 //!
 //! ============================================================================
 //! 3. EXECUTION INSTRUCTIONS:
 //! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 1_02_get_names
+//!   cargo run --example 2_02_get_names
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST - IP address of the panel (default: "192.168.1.100")

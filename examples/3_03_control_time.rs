@@ -1,4 +1,4 @@
-//! Example 2_03: Set and synchronize real-time clock (RTC) in Satel Integra panel.
+﻿//! Example 3_03: Set and synchronize real-time clock (RTC) in Satel Integra panel.
 //!
 //! ============================================================================
 //! 1. RTC CONTROL OVERVIEW & API METHODS:
@@ -34,7 +34,7 @@
 //! 3. EXECUTION INSTRUCTIONS:
 //! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 2_03_control_time
+//!   cargo run --example 3_03_control_time
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST           - IP address of the panel (default: "192.168.1.100")

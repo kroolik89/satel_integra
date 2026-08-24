@@ -1,4 +1,4 @@
-//! Example 1_09: Query real-time clock (RTC) and system time from Satel Integra panel.
+﻿//! Example 2_09: Query real-time clock (RTC) and system time from Satel Integra panel.
 //!
 //! ============================================================================
 //! 1. 2-STEP RTC TIME WORKFLOW (NETWORK FETCH VS CACHE READ):
@@ -35,7 +35,7 @@
 //! 3. EXECUTION INSTRUCTIONS:
 //! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 1_09_get_time
+//!   cargo run --example 2_09_get_time
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST - IP address of the panel (default: "192.168.1.100")

@@ -1,4 +1,4 @@
-//! Example 1_08: Query real-time system troubles, diagnostic faults, and trouble memory.
+﻿//! Example 2_08: Query real-time system troubles, diagnostic faults, and trouble memory.
 //!
 //! ============================================================================
 //! 1. 2-STEP TROUBLES WORKFLOW (NETWORK FETCH VS CACHE READ):
@@ -35,7 +35,7 @@
 //! 3. EXECUTION INSTRUCTIONS:
 //! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 1_08_get_troubles
+//!   cargo run --example 2_08_get_troubles
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST - IP address of the panel (default: "192.168.1.100")

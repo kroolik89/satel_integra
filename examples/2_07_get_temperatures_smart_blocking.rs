@@ -1,4 +1,4 @@
-//! Example 1_07: Demonstration of Smart Temperature Error Blocking & Self-Healing.
+﻿//! Example 2_07: Demonstration of Smart Temperature Error Blocking & Self-Healing.
 //!
 //! ============================================================================
 //! 1. SMART ERROR BLOCKING & QUEUE PROTECTION OVERVIEW:
@@ -35,7 +35,7 @@
 //! 3. EXECUTION INSTRUCTIONS:
 //! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 1_07_get_temperatures_smart_blocking
+//!   cargo run --example 2_07_get_temperatures_smart_blocking
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST - IP address of the panel (default: "192.168.1.100")

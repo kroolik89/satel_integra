@@ -1,4 +1,4 @@
-//! Example 5_01: Complete reference guide showcasing all configuration fields in `Config`.
+﻿//! Example 6_01: Complete reference guide showcasing all configuration fields in `Config`.
 //!
 //! ============================================================================
 //! 1. CONFIGURATION SYSTEM OVERVIEW & ARCHITECTURE:
@@ -72,7 +72,7 @@
 //! 3. EXECUTION INSTRUCTIONS:
 //! ============================================================================
 //! Run with default settings:
-//!   cargo run --example 5_01_config_all
+//!   cargo run --example 6_01_config_all
 //!
 //! Environment variables (optional):
 //!   SATEL_HOST - IP address of the panel (default: "192.168.1.100")
@@ -103,7 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ========================================================================
     let config = Config {
         // --------------------------------------------------------------------
-        // 1. Connection Transport
+        // 1. Connection Transport & Security
         // --------------------------------------------------------------------
         // TCP Connection (ETHM-1 / ETHM-1 Plus modules)
         connection: ConnectionConfig::Tcp {
@@ -115,6 +115,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         //     path: "COM3".to_string(), // or "/dev/ttyUSB0" on Linux
         //     baud_rate: 19200,         // Standard Satel INT-RS baud rate
         // },
+
+        // Enable AES-192 ECB encrypted communication with ETHM-1 Plus. Default: false.
+        // Requires setting `integration_key` (up to 12 ASCII characters).
+        encryption: false,
+
+        // Integration encryption key configured in DLOADX (Structure -> Modules -> ETHM-1).
+        // Required when `encryption = true`. Stored in memory in plaintext.
+        integration_key: None,
 
         // --------------------------------------------------------------------
         // 2. Network Timeouts & Queue Expiry
