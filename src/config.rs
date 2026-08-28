@@ -341,7 +341,7 @@ fn default_temp_read_timeout_ms() -> u64 { 2000 }
 fn default_buffer_timeout_ms() -> u64 { 10000 }
 
 /// Transport connection parameters.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(tag = "type")]
 pub enum ConnectionConfig {
     #[serde(rename = "tcp")]

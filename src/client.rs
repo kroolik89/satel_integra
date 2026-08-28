@@ -67,6 +67,11 @@ impl SatelIntegra {
         }
     }
 
+    /// Returns a copy of the current configuration.
+    pub fn get_config(&self) -> Config {
+        self.config.read().unwrap().clone()
+    }
+
     /// Connects to the panel and spawns background tasks (actor worker, auto-requester, poller).
     pub async fn connect(&self) -> Result<(), SatelError> {
         self.config.read().unwrap().validate()?;
