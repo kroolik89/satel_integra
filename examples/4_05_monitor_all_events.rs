@@ -1,4 +1,4 @@
-﻿//! Example 4_05: Comprehensive real-time event monitor handling all SatelEvent variants.
+//! Example 4_05: Comprehensive real-time event monitor handling all SatelEvent variants.
 //!
 //! ============================================================================
 //! 1. EVENT STREAMING OVERVIEW & EXHAUSTIVE MATCHING:
@@ -200,6 +200,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 SatelEvent::PanelMessage(result) => {
                     println!("[{}] [PANEL MESSAGE]     Result code: {:?}", ts, result);
+                }
+
+                // --- Batch Synchronization Lifecycle ---
+                SatelEvent::SyncStarted { category, total } => {
+                    println!("[{}] [SYNC STARTED]      {} -> 0/{}", ts, category, total);
+                }
+                SatelEvent::SyncProgress { category, current, total, name } => {
+                    println!("[{}] [SYNC PROGRESS]     {} -> #{}/{} \"{}\"", ts, category, current, total, name);
+                }
+                SatelEvent::SyncFinished { category, total, success_count, error } => {
+                    println!("[{}] [SYNC FINISHED]     {} -> {}/{} (error: {:?})", ts, category, success_count, total, error);
                 }
             }
         }

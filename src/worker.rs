@@ -63,7 +63,7 @@ pub(crate) enum InternalMessage {
 
 /// Background actor worker managing the physical socket/serial connection.
 pub(crate) struct SatelCommunicationWorker {
-    pub config: Config,
+    pub config: std::sync::Arc<std::sync::RwLock<crate::config::Config>>,
     pub state: SatelStateHandle,
     pub rx: mpsc::Receiver<InternalMessage>,
     pub stream: Option<FramedStream>,
@@ -86,7 +86,7 @@ impl SatelCommunicationWorker {
         let mut ping_interval = tokio::time::interval(Duration::from_secs(1));
 
         loop {
-            let should_reconnect = self.config.auto_reconnect;
+            let should_reconnect = self.config.read().unwrap().auto_reconnect;
 
             tokio::select! {
                 maybe_msg = self.rx.recv() => {
@@ -304,7 +304,7 @@ impl SatelCommunicationWorker {
             s.telemetry.status.last_event_at = Instant::now();
             s.telemetry.status.failed_attempts = 0;
             s.telemetry.last_connected_at = Some(SystemTime::now());
-            s.connection_type = Some(match &self.config.connection {
+            s.connection_type = Some(match &self.config.read().unwrap().connection {
                 ConnectionConfig::Tcp { host, port } => ConnectionType::Tcp(host.clone(), *port),
                 ConnectionConfig::Uart { path, .. } => ConnectionType::Uart(path.clone()),
             });
@@ -338,7 +338,7 @@ impl SatelCommunicationWorker {
     async fn satel_connection_worker_connect(&mut self) -> Result<(), SatelError> {
         self.set_state_connecting().await;
 
-        let conn_timeout = Duration::from_millis(self.config.read_timeout_ms);
+        let conn_timeout = Duration::from_millis(self.config.read().unwrap().read_timeout_ms);
 
         // STEP 1: Physical transport connection
         let stream = match self.satel_connection_worker_connect_physical(conn_timeout).await {
@@ -358,7 +358,7 @@ impl SatelCommunicationWorker {
         self.satel_connection_worker_connect_handshake(conn_timeout).await?;
 
         // STEP 3: Configure Auto-read push notifications
-        if self.config.is_auto_read_enabled() {
+        if self.config.read().unwrap().is_auto_read_enabled() {
             self.satel_connection_worker_connect_auto_read(conn_timeout).await?;
         }
 
@@ -373,9 +373,9 @@ impl SatelCommunicationWorker {
     ) -> Result<Box<dyn AsyncReadWrite>, SatelError> {
         tracing::info!("Attempting physical connection...");
 
-        let connection_config = self.config.connection.clone();
-        let encryption = self.config.encryption;
-        let integration_key = self.config.integration_key.clone();
+        let connection_config = self.config.read().unwrap().connection.clone();
+        let encryption = self.config.read().unwrap().encryption;
+        let integration_key = self.config.read().unwrap().integration_key.clone();
 
         let stream_result = timeout(conn_timeout, async move {
             match connection_config {
@@ -470,7 +470,10 @@ impl SatelCommunicationWorker {
                 .unwrap_or(false)
         };
 
-        let mask = Self::satel_connection_worker_connect_build_push_mask(&self.config, support_14_byte_mask);
+        let mask = {
+            let config = self.config.read().unwrap();
+            Self::satel_connection_worker_connect_build_push_mask(&*config, support_14_byte_mask)
+        };
         let mut auto_push_data = vec![SatelCommand::ListOfNewData.to_byte()];
         auto_push_data.extend_from_slice(&mask);
 
@@ -480,7 +483,10 @@ impl SatelCommunicationWorker {
         {
             Ok(response) => {
                 tracing::info!("Handshake: push notification configuration successful");
-                let report = process_auto_read_response(&self.config, support_14_byte_mask, &response);
+                let report = {
+                    let config = self.config.read().unwrap();
+                    process_auto_read_response(&*config, support_14_byte_mask, &response)
+                };
                 Self::notify_state_worker(&self.state_worker_tx, StateWorkerMessage::AutoReadReport(report)).await;
                 Ok(())
             }

@@ -2,7 +2,7 @@ use crate::auto_requester::SatelAutoRequester;
 use crate::command::SatelCommand;
 use crate::config::Config;
 use crate::error::SatelError;
-use crate::event::SatelEvent;
+use crate::event::{SatelEvent, SyncCategory};
 use crate::parsers::{
     process_ethm_version, process_integra_version, process_output_name,
     process_outputs_state, process_partition_name, process_partitions_alarm,
@@ -26,7 +26,7 @@ use crate::state::{
 };
 use crate::worker::{InternalMessage, SatelCommunicationWorker};
 use chrono::Local;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -36,7 +36,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 pub struct SatelIntegra {
     pub(crate) tx: mpsc::Sender<InternalMessage>,
     pub(crate) state: SatelStateHandle,
-    pub(crate) config: Config,
+    pub(crate) config: Arc<RwLock<Config>>,
     pub(crate) worker: Arc<Mutex<Option<SatelCommunicationWorker>>>,
     pub(crate) event_tx: broadcast::Sender<SatelEvent>,
 }
@@ -48,9 +48,10 @@ impl SatelIntegra {
         let state = Arc::new(std::sync::RwLock::new(SatelState::new()));
         let (tx, rx) = mpsc::channel(100);
         let (event_tx, _) = broadcast::channel(1024);
+        let config_arc = Arc::new(RwLock::new(config));
 
         let worker = SatelCommunicationWorker {
-            config: config.clone(),
+            config: config_arc.clone(),
             state: state.clone(),
             rx,
             stream: None,
@@ -60,7 +61,7 @@ impl SatelIntegra {
         Self {
             tx,
             state,
-            config,
+            config: config_arc,
             worker: Arc::new(Mutex::new(Some(worker))),
             event_tx,
         }
@@ -68,7 +69,7 @@ impl SatelIntegra {
 
     /// Connects to the panel and spawns background tasks (actor worker, auto-requester, poller).
     pub async fn connect(&self) -> Result<(), SatelError> {
-        self.config.validate()?;
+        self.config.read().unwrap().validate()?;
 
         let maybe_worker = {
             let mut worker_lock = self.worker.lock().unwrap();
@@ -90,26 +91,11 @@ impl SatelIntegra {
                 state_worker.run().await;
             });
 
-            if self.config.is_polling_enabled() {
-                let mut poller = SatelPollingWorker::new(self.clone());
-
-                if !self.config.polling_temperatures_zones.is_empty() {
-                    let interval = Duration::from_secs(
-                        self.config
-                            .polling_temperatures_interval_minutes
-                            .max(1)
-                            * 60,
-                    );
-                    poller.register_task(Box::new(TemperaturePollingTask::new(
-                        self.config.polling_temperatures_zones.clone(),
-                        interval,
-                    )));
-                }
-
-                tokio::spawn(async move {
-                    poller.run().await;
-                });
-            }
+            let mut poller = SatelPollingWorker::new(self.clone());
+            poller.register_task(Box::new(TemperaturePollingTask::new()));
+            tokio::spawn(async move {
+                poller.run().await;
+            });
 
             tokio::spawn(async move {
                 worker.run(connect_tx).await;
@@ -143,6 +129,49 @@ impl SatelIntegra {
         rx.await.map_err(|_| SatelError::WorkerDropped)?
     }
 
+    /// Dynamically updates the configuration without dropping the active connection.
+    /// WARNING: This function guarantees that the physical connection parameters 
+    /// (IP, port, RS, encryption, key) will NEVER change, 
+    /// even if the `new_config` object contains different values.
+    /// The new connection parameters will be silently overwritten by the old ones from the current state.
+    pub fn hot_reload_config(&self, mut new_config: Config) -> Result<(), SatelError> {
+        new_config.validate()?;
+        {
+            let mut guard = self.config.write().unwrap();
+            // Preserve connection parameters
+            new_config.connection = guard.connection.clone();
+            new_config.encryption = guard.encryption;
+            new_config.integration_key = guard.integration_key.clone();
+            
+            *guard = new_config;
+        }
+        let _ = self.event_tx.send(SatelEvent::ConfigUpdated);
+        Ok(())
+    }
+
+    /// Full configuration reload.
+    /// Always disconnects the current connection (unless already disconnected) and 
+    /// establishes it again, forcing the client to apply the full, 
+    /// new hardware configuration from `new_config`.
+    pub async fn reload_config(&self, new_config: Config) -> Result<(), SatelError> {
+        new_config.validate()?;
+        {
+            let mut guard = self.config.write().unwrap();
+            *guard = new_config;
+        }
+        let _ = self.event_tx.send(SatelEvent::ConfigUpdated);
+        
+        // Reconnect if currently connected or trying to connect
+        let state = self.state_handle().read().unwrap().telemetry.status.state;
+        if state != crate::state::ConnectionState::Disconnected {
+            let _ = self.disconnect().await;
+            self.connect().await?;
+        }
+        
+        Ok(())
+    }
+
+
     /// Returns a thread-safe shared handle to the in-memory cache.
     pub fn state_handle(&self) -> SatelStateHandle {
         self.state.clone()
@@ -166,15 +195,20 @@ impl SatelIntegra {
         read_timeout: Option<Duration>,
     ) -> Result<Vec<u8>, SatelError> {
         let (response_tx, response_rx) = oneshot::channel();
+        
+        let (cfg_write, cfg_read, cfg_buf) = {
+            let c = self.config.read().unwrap();
+            (c.write_timeout_ms, c.read_timeout_ms, c.buffer_timeout_ms)
+        };
 
         let msg = InternalMessage::ExchangeStandard {
             data,
             write_timeout: write_timeout
-                .unwrap_or(Duration::from_millis(self.config.write_timeout_ms)),
+                .unwrap_or(Duration::from_millis(cfg_write)),
             read_timeout: read_timeout
-                .unwrap_or(Duration::from_millis(self.config.read_timeout_ms)),
+                .unwrap_or(Duration::from_millis(cfg_read)),
             created_at: Instant::now(),
-            max_queue_time: Duration::from_millis(self.config.buffer_timeout_ms),
+            max_queue_time: Duration::from_millis(cfg_buf),
             response_tx,
         };
 
@@ -195,12 +229,17 @@ impl SatelIntegra {
     ) -> Result<Vec<u8>, SatelError> {
         let (response_tx, response_rx) = oneshot::channel();
 
+        let (cfg_write, cfg_read) = {
+            let c = self.config.read().unwrap();
+            (c.write_timeout_ms, c.read_timeout_ms)
+        };
+
         let msg = InternalMessage::ExchangePriority {
             data,
             write_timeout: write_timeout
-                .unwrap_or(Duration::from_millis(self.config.write_timeout_ms)),
+                .unwrap_or(Duration::from_millis(cfg_write)),
             read_timeout: read_timeout
-                .unwrap_or(Duration::from_millis(self.config.read_timeout_ms)),
+                .unwrap_or(Duration::from_millis(cfg_read)),
             response_tx,
         };
 
@@ -302,6 +341,60 @@ impl SatelIntegra {
             .map(|z| z.to_zone_name()))
     }
 
+    /// Queries the UTF-8 names of all zones configured in the panel.
+    /// Emits `SatelEvent::SyncStarted`, `SatelEvent::SyncProgress` per item, and `SatelEvent::SyncFinished`.
+    /// Returns `Err(SatelError::PanelVersionUnknown)` if Integra version has not been retrieved yet.
+    /// Returns `Ok(true)` after querying all zones (1..=io_count).
+    pub async fn get_all_zone_names(&self) -> Result<bool, SatelError> {
+        let version = self.get_cached_version()?.ok_or(SatelError::PanelVersionUnknown)?;
+        if version.io_count == 0 {
+            return Err(SatelError::PanelVersionUnknown);
+        }
+
+        let total = version.io_count;
+        let _ = self.event_tx.send(SatelEvent::SyncStarted {
+            category: SyncCategory::Zones,
+            total,
+        });
+
+        tracing::info!("Querying all zone names (1..={})...", total);
+        let mut success_count = 0;
+        let mut last_error: Option<SatelError> = None;
+
+        for zone_id in 1..=total {
+            match self.get_zone_name(zone_id).await {
+                Ok(res) => {
+                    success_count += 1;
+                    let _ = self.event_tx.send(SatelEvent::SyncProgress {
+                        category: SyncCategory::Zones,
+                        current: zone_id,
+                        total,
+                        name: res.name,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to query zone #{} name: {:?}", zone_id, e);
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        let _ = self.event_tx.send(SatelEvent::SyncFinished {
+            category: SyncCategory::Zones,
+            total,
+            success_count,
+            error: last_error.as_ref().map(|e| e.to_string()),
+        });
+
+        if success_count == 0 {
+            if let Some(err) = last_error {
+                return Err(err);
+            }
+        }
+
+        Ok(true)
+    }
+
     /// Queries the UTF-8 name of an output (0xEE type 4).
     pub async fn get_output_name(&self, output_id: u16) -> Result<OutputName, SatelError> {
         tracing::info!("Querying output name #{}", output_id);
@@ -357,6 +450,60 @@ impl SatelIntegra {
             .outputs
             .get((output_id.wrapping_sub(1) % 256) as usize)
             .map(|o| o.to_output_name()))
+    }
+
+    /// Queries the UTF-8 names of all outputs configured in the panel.
+    /// Emits `SatelEvent::SyncStarted`, `SatelEvent::SyncProgress` per item, and `SatelEvent::SyncFinished`.
+    /// Returns `Err(SatelError::PanelVersionUnknown)` if Integra version has not been retrieved yet.
+    /// Returns `Ok(true)` after querying all outputs (1..=io_count).
+    pub async fn get_all_output_names(&self) -> Result<bool, SatelError> {
+        let version = self.get_cached_version()?.ok_or(SatelError::PanelVersionUnknown)?;
+        if version.io_count == 0 {
+            return Err(SatelError::PanelVersionUnknown);
+        }
+
+        let total = version.io_count;
+        let _ = self.event_tx.send(SatelEvent::SyncStarted {
+            category: SyncCategory::Outputs,
+            total,
+        });
+
+        tracing::info!("Querying all output names (1..={})...", total);
+        let mut success_count = 0;
+        let mut last_error: Option<SatelError> = None;
+
+        for output_id in 1..=total {
+            match self.get_output_name(output_id).await {
+                Ok(res) => {
+                    success_count += 1;
+                    let _ = self.event_tx.send(SatelEvent::SyncProgress {
+                        category: SyncCategory::Outputs,
+                        current: output_id,
+                        total,
+                        name: res.name,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to query output #{} name: {:?}", output_id, e);
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        let _ = self.event_tx.send(SatelEvent::SyncFinished {
+            category: SyncCategory::Outputs,
+            total,
+            success_count,
+            error: last_error.as_ref().map(|e| e.to_string()),
+        });
+
+        if success_count == 0 {
+            if let Some(err) = last_error {
+                return Err(err);
+            }
+        }
+
+        Ok(true)
     }
 
     /// Queries the UTF-8 name of a partition (0xEE type 0).
@@ -419,10 +566,64 @@ impl SatelIntegra {
             .map(|p| p.to_partition_name()))
     }
 
+    /// Queries the UTF-8 names of all partitions configured in the panel.
+    /// Emits `SatelEvent::SyncStarted`, `SatelEvent::SyncProgress` per item, and `SatelEvent::SyncFinished`.
+    /// Returns `Err(SatelError::PanelVersionUnknown)` if Integra version has not been retrieved yet.
+    /// Returns `Ok(true)` after querying all partitions (1..=32).
+    pub async fn get_all_partition_names(&self) -> Result<bool, SatelError> {
+        let version = self.get_cached_version()?.ok_or(SatelError::PanelVersionUnknown)?;
+        if version.io_count == 0 {
+            return Err(SatelError::PanelVersionUnknown);
+        }
+
+        let total = 32u16;
+        let _ = self.event_tx.send(SatelEvent::SyncStarted {
+            category: SyncCategory::Partitions,
+            total,
+        });
+
+        tracing::info!("Querying all partition names (1..=32)...");
+        let mut success_count = 0;
+        let mut last_error: Option<SatelError> = None;
+
+        for partition_id in 1..=total {
+            match self.get_partition_name(partition_id).await {
+                Ok(res) => {
+                    success_count += 1;
+                    let _ = self.event_tx.send(SatelEvent::SyncProgress {
+                        category: SyncCategory::Partitions,
+                        current: partition_id,
+                        total,
+                        name: res.name,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to query partition #{} name: {:?}", partition_id, e);
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        let _ = self.event_tx.send(SatelEvent::SyncFinished {
+            category: SyncCategory::Partitions,
+            total,
+            success_count,
+            error: last_error.as_ref().map(|e| e.to_string()),
+        });
+
+        if success_count == 0 {
+            if let Some(err) = last_error {
+                return Err(err);
+            }
+        }
+
+        Ok(true)
+    }
+
     /// Queries the temperature of a zone (0x7D).
     /// If `temp_blocking_enabled` is active, faulty probes are verified and automatically blocked.
     pub async fn get_zone_temperature(&self, zone_id: u16) -> Result<ZoneTemperature, SatelError> {
-        if self.config.temp_blocking_enabled {
+        if self.config.read().unwrap().temp_blocking_enabled {
             self.get_zone_temperature_with_blocking(zone_id).await
         } else {
             self.get_zone_temperature_raw(zone_id).await
@@ -438,11 +639,12 @@ impl SatelIntegra {
             if zone_id == 256 { 0 } else { zone_id as u8 },
         ];
 
+        let temp_read_timeout = self.config.read().unwrap().temp_read_timeout_ms;
         let response_result = self
             .exchange(
                 cmd,
                 None,
-                Some(Duration::from_millis(self.config.temp_read_timeout_ms)),
+                Some(Duration::from_millis(temp_read_timeout)),
             )
             .await;
 
@@ -470,7 +672,7 @@ impl SatelIntegra {
                         zone.temperature_sensor_errors_current -= 1;
                     }
 
-                    if self.config.emit_unchanged_temperatures || (old_temp - temp).abs() > 0.01 {
+                    if self.config.read().unwrap().emit_unchanged_temperatures || (old_temp - temp).abs() > 0.01 {
                         let _ = self.event_tx.send(SatelEvent::ZoneTemperatureChanged {
                             id: zone.id,
                             temperature: temp,
@@ -523,12 +725,12 @@ impl SatelIntegra {
         if let Some(info) = zone_info {
             let is_blocked = info.temperature_status == TemperatureSensorStatus::BlockSensorMissing
                 || info.temperature_status == TemperatureSensorStatus::BlockCommunicationError
-                || info.temperature_timeout_errors_current >= self.config.temp_max_timeout_errors
-                || info.temperature_sensor_errors_current >= self.config.temp_max_sensor_errors;
+                || info.temperature_timeout_errors_current >= self.config.read().unwrap().temp_max_timeout_errors
+                || info.temperature_sensor_errors_current >= self.config.read().unwrap().temp_max_sensor_errors;
 
             if is_blocked {
                 let status = if info.temperature_status == TemperatureSensorStatus::BlockSensorMissing
-                    || info.temperature_timeout_errors_current >= self.config.temp_max_timeout_errors
+                    || info.temperature_timeout_errors_current >= self.config.read().unwrap().temp_max_timeout_errors
                 {
                     TemperatureSensorStatus::BlockSensorMissing
                 } else {
@@ -542,7 +744,7 @@ impl SatelIntegra {
                     }
                 }
 
-                if self.config.emit_unchanged_temperatures {
+                if self.config.read().unwrap().emit_unchanged_temperatures {
                     let _ = self.event_tx.send(SatelEvent::ZoneTemperatureError {
                         id: zone_id,
                         status,
@@ -593,7 +795,7 @@ impl SatelIntegra {
         tracing::info!("Querying all zones tamper state (0x01)...");
         let cmd = vec![SatelCommand::ZonesTamper.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
-        let result = process_zones_tamper(&response, &self.config.io_tamper_invert)?;
+        let result = process_zones_tamper(&response, &self.config.read().unwrap().io_tamper_invert)?;
         self.update_zones_tamper_internal(result)?;
         tracing::info!("Updated zones tamper states in cache");
         Ok(())
@@ -604,7 +806,7 @@ impl SatelIntegra {
         tracing::info!("Querying all zones alarm state (0x02)...");
         let cmd = vec![SatelCommand::ZonesAlarm.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
-        let result = process_zones_alarm(&response, &self.config.io_alarm_invert)?;
+        let result = process_zones_alarm(&response, &self.config.read().unwrap().io_alarm_invert)?;
         self.update_zones_alarm_internal(result)?;
         tracing::info!("Updated zones alarm states in cache");
         Ok(())
@@ -615,7 +817,7 @@ impl SatelIntegra {
         tracing::info!("Querying all zones violation state (0x00)...");
         let cmd = vec![SatelCommand::ZonesViolation.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
-        let result = process_zones_violation(&response, &self.config.io_violation_invert)?;
+        let result = process_zones_violation(&response, &self.config.read().unwrap().io_violation_invert)?;
         self.update_zones_violation_internal(result)?;
         tracing::info!("Updated zones violation states in cache");
         Ok(())
@@ -626,7 +828,7 @@ impl SatelIntegra {
         tracing::info!("Querying all zones tamper alarm state (0x03)...");
         let cmd = vec![SatelCommand::ZonesTamperAlarm.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
-        let result = process_zones_tamper_alarm(&response, &self.config.io_tamper_alarm_invert)?;
+        let result = process_zones_tamper_alarm(&response, &self.config.read().unwrap().io_tamper_alarm_invert)?;
         self.update_zones_tamper_alarm_internal(result)?;
         tracing::info!("Updated zones tamper alarm states in cache");
         Ok(())
@@ -637,7 +839,7 @@ impl SatelIntegra {
         tracing::info!("Querying all zones alarm memory state (0x04)...");
         let cmd = vec![SatelCommand::ZonesAlarmMemory.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
-        let result = process_zones_alarm_memory(&response, &self.config.io_alarm_memory_invert)?;
+        let result = process_zones_alarm_memory(&response, &self.config.read().unwrap().io_alarm_memory_invert)?;
         self.update_zones_alarm_memory_internal(result)?;
         tracing::info!("Updated zones alarm memory states in cache");
         Ok(())
@@ -648,7 +850,7 @@ impl SatelIntegra {
         tracing::info!("Querying all zones tamper alarm memory state (0x05)...");
         let cmd = vec![SatelCommand::ZonesTamperAlarmMemory.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
-        let result = process_zones_tamper_alarm_memory(&response, &self.config.io_tamper_alarm_memory_invert)?;
+        let result = process_zones_tamper_alarm_memory(&response, &self.config.read().unwrap().io_tamper_alarm_memory_invert)?;
         self.update_zones_tamper_alarm_memory_internal(result)?;
         tracing::info!("Updated zones tamper alarm memory states in cache");
         Ok(())
@@ -659,7 +861,7 @@ impl SatelIntegra {
         tracing::info!("Querying all zones bypass state (0x06)...");
         let cmd = vec![SatelCommand::ZonesBypass.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
-        let result = process_zones_bypass(&response, &self.config.io_bypass_invert)?;
+        let result = process_zones_bypass(&response, &self.config.read().unwrap().io_bypass_invert)?;
         self.update_zones_bypass_internal(result)?;
         tracing::info!("Updated zones bypass states in cache");
         Ok(())
@@ -670,7 +872,7 @@ impl SatelIntegra {
         tracing::info!("Querying all zones 'no violation trouble' state (0x07)...");
         let cmd = vec![SatelCommand::ZonesNoViolationTrouble.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
-        let result = process_zones_no_violation_trouble(&response, &self.config.io_no_violation_trouble_invert)?;
+        let result = process_zones_no_violation_trouble(&response, &self.config.read().unwrap().io_no_violation_trouble_invert)?;
         self.update_zones_no_violation_trouble_internal(result)?;
         tracing::info!("Updated zones 'no violation trouble' states in cache");
         Ok(())
@@ -681,7 +883,7 @@ impl SatelIntegra {
         tracing::info!("Querying all zones 'long violation trouble' state (0x08)...");
         let cmd = vec![SatelCommand::ZonesLongViolationTrouble.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
-        let result = process_zones_long_violation_trouble(&response, &self.config.io_long_violation_trouble_invert)?;
+        let result = process_zones_long_violation_trouble(&response, &self.config.read().unwrap().io_long_violation_trouble_invert)?;
         self.update_zones_long_violation_trouble_internal(result)?;
         tracing::info!("Updated zones 'long violation trouble' states in cache");
         Ok(())
@@ -1208,7 +1410,7 @@ impl SatelIntegra {
         if let Some(c) = code {
             return Ok(c.to_string());
         }
-        if let Some(ref c) = self.config.user_code {
+        if let Some(ref c) = self.config.read().unwrap().user_code {
             return Ok(c.clone());
         }
         Err(SatelError::InvalidUserCode)

@@ -1,8 +1,31 @@
+use serde::{Deserialize, Serialize};
+
 use crate::command::SatelResult;
 use crate::state::{
     AutoReadReport, ConnectionState, EthmVersion, IntegraVersion, SystemStatus,
     TemperatureSensorStatus, TroubleType,
 };
+
+/// Category of panel elements being synchronized in batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SyncCategory {
+    /// Alarm zones (inputs) 1..=io_count
+    Zones,
+    /// Programmable outputs 1..=io_count
+    Outputs,
+    /// Security partitions 1..=32
+    Partitions,
+}
+
+impl std::fmt::Display for SyncCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SyncCategory::Zones => write!(f, "zones"),
+            SyncCategory::Outputs => write!(f, "outputs"),
+            SyncCategory::Partitions => write!(f, "partitions"),
+        }
+    }
+}
 
 /// Events broadcasted in real time to subscribers.
 /// Can be received via `SatelIntegra::subscribe_events()`.
@@ -68,4 +91,25 @@ pub enum SatelEvent {
     TroubleMemory(TroubleType, bool),
     /// System status bits updated (0x1A).
     SystemStatusChanged(SystemStatus),
+    /// Batch name sync started for a category (zones, outputs, partitions).
+    SyncStarted {
+        category: SyncCategory,
+        total: u16,
+    },
+    /// Batch name sync progress for a single item.
+    SyncProgress {
+        category: SyncCategory,
+        current: u16,
+        total: u16,
+        name: String,
+    },
+    /// Batch name sync finished for a category (with success count and optional error).
+    SyncFinished {
+        category: SyncCategory,
+        total: u16,
+        success_count: u16,
+        error: Option<String>,
+    },
+    /// Configuration has been dynamically updated in place.
+    ConfigUpdated,
 }

@@ -48,4 +48,6 @@ pub enum SatelError {
     EncryptionError(String),
     #[error("Encrypted data length is not a multiple of AES block size (16 bytes), got {0} bytes")]
     InvalidEncryptedDataLength(usize),
+    #[error("Integra panel version is not detected or unknown")]
+    PanelVersionUnknown,
 }

@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-08-28
+
+### Added
+- **Hot-Reload Architecture**: Introduced real-time configuration reloading without process restart or thread recreation.
+  - Added `hot_reload_config(&self, mut new_config: Config)` for zero-downtime logical parameter updates (polling intervals, logical inversion, etc.) which strictly preserves physical connection parameters.
+  - Added async `reload_config(&self, new_config: Config)` which applies a full configuration update and automatically triggers a seamless connection restart (`disconnect().await` and `connect().await`) if the client is currently connected.
+  - Emits `SatelEvent::ConfigUpdated` upon successful reload.
+- **Batch Name Retrieval Functions & Lifecycle Events**: Added `get_all_zone_names()`, `get_all_output_names()`, and `get_all_partition_names()` to `SatelIntegra` client.
+  - Automatically verifies detected panel version and uses `io_count` to query all relevant zones/outputs/partitions.
+  - **Full 3-Phase Synchronization Lifecycle**: Added real-time event broadcasting for all 3 categories (`SyncCategory::Zones`, `SyncCategory::Outputs`, `SyncCategory::Partitions`):
+    - `SatelEvent::SyncStarted { category, total }`: Emitted immediately upon initiation with expected total count.
+    - `SatelEvent::SyncProgress { category, current, total, name }`: Emitted sequentially for each queried item with current index and read name.
+    - `SatelEvent::SyncFinished { category, total, success_count, error }`: Emitted upon completion with total queried, successful count, and error details if any occurred.
+  - **Error Resilience**: Sequential query pipeline aggregates successes and errors without abrupt thread interruption, ensuring downstream subscribers receive proper completion signals.
+- **Error Handling**: Added `SatelError::PanelVersionUnknown` when batch name operations are invoked before panel version is retrieved.
+
 ## [1.1.0] - 2026-08-24
 
 ### Added

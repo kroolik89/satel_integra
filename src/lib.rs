@@ -51,7 +51,7 @@ pub use codec::SatelCodec;
 pub use command::{SatelCommand, SatelResult};
 pub use config::{Config, ConnectionConfig};
 pub use error::SatelError;
-pub use event::SatelEvent;
+pub use event::{SatelEvent, SyncCategory};
 pub use state::{
     AutoReadItemState, AutoReadItemStatus, AutoReadReport, ConnectionState, ConnectionStatus,
     ConnectionTelemetry, ConnectionType, EthmCapabilities, EthmPtsaTroubles, EthmVersion,

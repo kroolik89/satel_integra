@@ -62,47 +62,47 @@ impl SatelAutoRequester {
 
         match frame[0] {
             0x00 => {
-                if let Ok(d) = process_zones_violation(frame, &self.integra.config.io_violation_invert) {
+                if let Ok(d) = process_zones_violation(frame, &self.integra.config.read().unwrap().io_violation_invert) {
                     let _ = self.integra.update_zones_violation_internal(d);
                 }
             }
             0x01 => {
-                if let Ok(d) = process_zones_tamper(frame, &self.integra.config.io_tamper_invert) {
+                if let Ok(d) = process_zones_tamper(frame, &self.integra.config.read().unwrap().io_tamper_invert) {
                     let _ = self.integra.update_zones_tamper_internal(d);
                 }
             }
             0x02 => {
-                if let Ok(d) = process_zones_alarm(frame, &self.integra.config.io_alarm_invert) {
+                if let Ok(d) = process_zones_alarm(frame, &self.integra.config.read().unwrap().io_alarm_invert) {
                     let _ = self.integra.update_zones_alarm_internal(d);
                 }
             }
             0x03 => {
-                if let Ok(d) = process_zones_tamper_alarm(frame, &self.integra.config.io_tamper_alarm_invert) {
+                if let Ok(d) = process_zones_tamper_alarm(frame, &self.integra.config.read().unwrap().io_tamper_alarm_invert) {
                     let _ = self.integra.update_zones_tamper_alarm_internal(d);
                 }
             }
             0x04 => {
-                if let Ok(d) = process_zones_alarm_memory(frame, &self.integra.config.io_alarm_memory_invert) {
+                if let Ok(d) = process_zones_alarm_memory(frame, &self.integra.config.read().unwrap().io_alarm_memory_invert) {
                     let _ = self.integra.update_zones_alarm_memory_internal(d);
                 }
             }
             0x05 => {
-                if let Ok(d) = process_zones_tamper_alarm_memory(frame, &self.integra.config.io_tamper_alarm_memory_invert) {
+                if let Ok(d) = process_zones_tamper_alarm_memory(frame, &self.integra.config.read().unwrap().io_tamper_alarm_memory_invert) {
                     let _ = self.integra.update_zones_tamper_alarm_memory_internal(d);
                 }
             }
             0x06 => {
-                if let Ok(d) = process_zones_bypass(frame, &self.integra.config.io_bypass_invert) {
+                if let Ok(d) = process_zones_bypass(frame, &self.integra.config.read().unwrap().io_bypass_invert) {
                     let _ = self.integra.update_zones_bypass_internal(d);
                 }
             }
             0x07 => {
-                if let Ok(d) = process_zones_no_violation_trouble(frame, &self.integra.config.io_no_violation_trouble_invert) {
+                if let Ok(d) = process_zones_no_violation_trouble(frame, &self.integra.config.read().unwrap().io_no_violation_trouble_invert) {
                     let _ = self.integra.update_zones_no_violation_trouble_internal(d);
                 }
             }
             0x08 => {
-                if let Ok(d) = process_zones_long_violation_trouble(frame, &self.integra.config.io_long_violation_trouble_invert) {
+                if let Ok(d) = process_zones_long_violation_trouble(frame, &self.integra.config.read().unwrap().io_long_violation_trouble_invert) {
                     let _ = self.integra.update_zones_long_violation_trouble_internal(d);
                 }
             }

@@ -9,12 +9,8 @@ pub(crate) trait PollingTask: Send + Sync {
     /// Task identifier name for logging.
     fn name(&self) -> &str;
 
-    /// Execution recurrence interval.
-    #[allow(dead_code)]
-    fn interval(&self) -> Duration;
-
     /// Checks if the task is due for execution.
-    fn is_due(&self) -> bool;
+    fn is_due(&self, integra: &SatelIntegra) -> bool;
 
     /// Executes the task asynchronously.
     fn execute<'a>(&'a mut self, integra: &'a SatelIntegra) -> BoxFuture<'a, ()>;
@@ -22,16 +18,12 @@ pub(crate) trait PollingTask: Send + Sync {
 
 /// Periodic background task querying configured zone temperature sensors.
 pub(crate) struct TemperaturePollingTask {
-    pub zones: Vec<u16>,
-    pub interval: Duration,
     pub last_run: Option<Instant>,
 }
 
 impl TemperaturePollingTask {
-    pub fn new(zones: Vec<u16>, interval: Duration) -> Self {
+    pub fn new() -> Self {
         Self {
-            zones,
-            interval,
             last_run: None,
         }
     }
@@ -42,26 +34,32 @@ impl PollingTask for TemperaturePollingTask {
         "TemperaturePollingTask"
     }
 
-    fn interval(&self) -> Duration {
-        self.interval
-    }
-
-    fn is_due(&self) -> bool {
+    fn is_due(&self, integra: &SatelIntegra) -> bool {
+        let config = integra.config.read().unwrap();
+        if !config.is_polling_enabled() || config.polling_temperatures_zones.is_empty() {
+            return false;
+        }
+        let interval = Duration::from_secs(
+            (config.polling_temperatures_interval_minutes.max(1) as u64) * 60,
+        );
         match self.last_run {
             None => true,
-            Some(last) => last.elapsed() >= self.interval,
+            Some(last) => last.elapsed() >= interval,
         }
     }
 
     fn execute<'a>(&'a mut self, integra: &'a SatelIntegra) -> BoxFuture<'a, ()> {
         Box::pin(async move {
             self.last_run = Some(Instant::now());
+            
+            let zones = integra.config.read().unwrap().polling_temperatures_zones.clone();
+            
             tracing::info!(
                 "Polling worker: starting temperature polling cycle for {} zones",
-                self.zones.len()
+                zones.len()
             );
 
-            for &zone_id in &self.zones {
+            for &zone_id in &zones {
                 // Check if connection is active
                 let is_connected = {
                     if let Ok(state) = integra.state_handle().read() {
@@ -159,7 +157,7 @@ impl SatelPollingWorker {
 
             if is_connected {
                 for task in &mut self.tasks {
-                    if task.is_due() {
+                    if task.is_due(&self.integra) {
                         tracing::debug!("SatelPollingWorker: running task '{}'", task.name());
                         task.execute(&self.integra).await;
                     }
