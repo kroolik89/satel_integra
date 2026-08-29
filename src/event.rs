@@ -15,6 +15,8 @@ pub enum SyncCategory {
     Outputs,
     /// Security partitions 1..=32
     Partitions,
+    /// Temperature sensors 1..=io_count
+    Temperatures,
 }
 
 impl std::fmt::Display for SyncCategory {
@@ -23,6 +25,7 @@ impl std::fmt::Display for SyncCategory {
             SyncCategory::Zones => write!(f, "zones"),
             SyncCategory::Outputs => write!(f, "outputs"),
             SyncCategory::Partitions => write!(f, "partitions"),
+            SyncCategory::Temperatures => write!(f, "temperatures"),
         }
     }
 }

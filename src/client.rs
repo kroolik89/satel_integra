@@ -637,6 +637,15 @@ impl SatelIntegra {
 
     /// Queries the zone temperature directly over the network without blocking checks.
     pub async fn get_zone_temperature_raw(&self, zone_id: u16) -> Result<ZoneTemperature, SatelError> {
+        self.get_zone_temperature_raw_timeout(zone_id, None).await
+    }
+
+    /// Queries the zone temperature directly over the network with an optional custom timeout.
+    pub async fn get_zone_temperature_raw_timeout(
+        &self,
+        zone_id: u16,
+        timeout: Option<Duration>,
+    ) -> Result<ZoneTemperature, SatelError> {
         tracing::info!("Querying zone #{} temperature (0x7D)", zone_id);
 
         let cmd = vec![
@@ -644,12 +653,15 @@ impl SatelIntegra {
             if zone_id == 256 { 0 } else { zone_id as u8 },
         ];
 
-        let temp_read_timeout = self.config.read().unwrap().temp_read_timeout_ms;
+        let temp_read_timeout = timeout.unwrap_or_else(|| {
+            Duration::from_millis(self.config.read().unwrap().temp_read_timeout_ms)
+        });
+
         let response_result = self
             .exchange(
                 cmd,
                 None,
-                Some(Duration::from_millis(temp_read_timeout)),
+                Some(temp_read_timeout),
             )
             .await;
 
@@ -700,6 +712,99 @@ impl SatelIntegra {
                 }
             }
         }
+    }
+
+    /// Scans all configured zones (1..=io_count) to discover temperature probes.
+    /// Emits `SatelEvent::SyncStarted`, `SatelEvent::SyncProgress` per zone, and `SatelEvent::SyncFinished`.
+    /// When a sensor responds, `SatelEvent::ZoneTemperatureChanged` is emitted automatically.
+    /// Returns `Ok(true)` on successful completion.
+    pub async fn get_all_zone_temperatures(
+        &self,
+        probe_timeout: Option<Duration>,
+    ) -> Result<bool, SatelError> {
+        let version = self.get_cached_version()?.ok_or(SatelError::PanelVersionUnknown)?;
+        if version.io_count == 0 {
+            return Err(SatelError::PanelVersionUnknown);
+        }
+
+        let total = version.io_count;
+        let _ = self.event_tx.send(SatelEvent::SyncStarted {
+            category: SyncCategory::Temperatures,
+            total,
+        });
+
+        tracing::info!(
+            "Discovering temperature sensors across all zones (1..={}) with timeout {:?}...",
+            total,
+            probe_timeout
+        );
+
+        let mut success_count = 0;
+        let mut last_error: Option<String> = None;
+
+        for zone_id in 1..=total {
+            let cached_name = self
+                .get_cached_zone_name(zone_id)
+                .ok()
+                .flatten()
+                .map(|z| z.name.trim().to_string())
+                .filter(|s| !s.is_empty());
+
+            match self.get_zone_temperature_raw_timeout(zone_id, probe_timeout).await {
+                Ok(res) => {
+                    success_count += 1;
+                    let _ = self.event_tx.send(SatelEvent::SyncProgress {
+                        category: SyncCategory::Temperatures,
+                        current: zone_id,
+                        total,
+                        name: format!("{} - {:.1} °C", zone_id, res.temperature),
+                    });
+                }
+                Err(SatelError::TemperatureSensorError) => {
+                    // Sensor is physically present in the panel but reporting 0xFFFF (disconnected/damaged probe)
+                    tracing::warn!("Zone #{} has a temperature sensor with error (0xFFFF)", zone_id);
+                    let _ = self.event_tx.send(SatelEvent::SyncProgress {
+                        category: SyncCategory::Temperatures,
+                        current: zone_id,
+                        total,
+                        name: format!("{} - Błąd", zone_id),
+                    });
+                }
+                Err(SatelError::TemperatureNotSupportedOrTimeOut) | Err(SatelError::Timeout) => {
+                    // No sensor configured on this zone (normal timeout)
+                    let no_temp_str = match &cached_name {
+                        Some(name) => format!("{} - {}", zone_id, name),
+                        None => format!("{}", zone_id),
+                    };
+                    let _ = self.event_tx.send(SatelEvent::SyncProgress {
+                        category: SyncCategory::Temperatures,
+                        current: zone_id,
+                        total,
+                        name: no_temp_str,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to query zone #{} temperature: {:?}", zone_id, e);
+                    let err_str = e.to_string();
+                    last_error = Some(err_str.clone());
+                    let _ = self.event_tx.send(SatelEvent::SyncProgress {
+                        category: SyncCategory::Temperatures,
+                        current: zone_id,
+                        total,
+                        name: format!("{} - Błąd ({})", zone_id, err_str),
+                    });
+                }
+            }
+        }
+
+        let _ = self.event_tx.send(SatelEvent::SyncFinished {
+            category: SyncCategory::Temperatures,
+            total,
+            success_count,
+            error: last_error,
+        });
+
+        Ok(true)
     }
 
     /// Returns the cached zone temperature reading from memory.

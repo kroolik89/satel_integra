@@ -212,6 +212,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 SatelEvent::SyncFinished { category, total, success_count, error } => {
                     println!("[{}] [SYNC FINISHED]     {} -> {}/{} (error: {:?})", ts, category, success_count, total, error);
                 }
+                SatelEvent::ConfigUpdated => {
+                    println!("[{}] [CONFIG UPDATED]     Configuration reloaded in place", ts);
+                }
             }
         }
         println!("[Universal Listener] Event channel closed.");
