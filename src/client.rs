@@ -574,20 +574,20 @@ impl SatelIntegra {
     /// Queries the UTF-8 names of all partitions configured in the panel.
     /// Emits `SatelEvent::SyncStarted`, `SatelEvent::SyncProgress` per item, and `SatelEvent::SyncFinished`.
     /// Returns `Err(SatelError::PanelVersionUnknown)` if Integra version has not been retrieved yet.
-    /// Returns `Ok(true)` after querying all partitions (1..=32).
+    /// Returns `Ok(true)` after querying all partitions (1..=partition_count).
     pub async fn get_all_partition_names(&self) -> Result<bool, SatelError> {
         let version = self.get_cached_version()?.ok_or(SatelError::PanelVersionUnknown)?;
-        if version.io_count == 0 {
+        if version.io_count == 0 || version.partition_count == 0 {
             return Err(SatelError::PanelVersionUnknown);
         }
 
-        let total = 32u16;
+        let total = version.partition_count;
         let _ = self.event_tx.send(SatelEvent::SyncStarted {
             category: SyncCategory::Partitions,
             total,
         });
 
-        tracing::info!("Querying all partition names (1..=32)...");
+        tracing::info!("Querying all partition names (1..={total})...");
         let mut success_count = 0;
         let mut last_error: Option<SatelError> = None;
 

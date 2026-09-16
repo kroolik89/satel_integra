@@ -87,6 +87,8 @@ pub struct IntegraVersion {
     pub language: String,
     pub stored_in_flash: bool,
     pub io_count: u16,
+    /// Maksymalna liczba stref (partycji) dla modelu; 0 = model nieznany.
+    pub partition_count: u16,
     pub read_at: DateTime<Local>,
 }
 

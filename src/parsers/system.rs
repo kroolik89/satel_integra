@@ -53,18 +53,18 @@ pub fn process_integra_version(frame: &[u8]) -> Result<IntegraVersion, SatelErro
 
     // 1 byte: Panel model type
     let type_code = data[0];
-    let (model, io_count) = match type_code {
-        0 => ("INTEGRA 24", 24),
-        1 => ("INTEGRA 32", 32),
-        2 => ("INTEGRA 64", 64),
-        3 => ("INTEGRA 128", 128),
-        4 => ("INTEGRA 128-WRL SIM300", 128),
-        132 => ("INTEGRA 128-WRL LEON", 128),
-        66 => ("INTEGRA 64 Plus", 64),
-        67 => ("INTEGRA 128 Plus", 128),
-        72 => ("INTEGRA 256 Plus", 256),
-        8 => ("INTEGRA 256 Plus", 256),
-        _ => ("Unknown INTEGRA", 0),
+    let (model, io_count, partition_count) = match type_code {
+        0 => ("INTEGRA 24", 24, 4),
+        1 => ("INTEGRA 32", 32, 16),
+        2 => ("INTEGRA 64", 64, 32),
+        3 => ("INTEGRA 128", 128, 32),
+        4 => ("INTEGRA 128-WRL SIM300", 128, 32),
+        132 => ("INTEGRA 128-WRL LEON", 128, 32),
+        66 => ("INTEGRA 64 Plus", 64, 32),
+        67 => ("INTEGRA 128 Plus", 128, 32),
+        72 => ("INTEGRA 256 Plus", 256, 32),
+        8 => ("INTEGRA 256 Plus", 256, 32),
+        _ => ("Unknown INTEGRA", 0, 0),
     };
 
     // 11 bytes: Firmware version and compilation date (ASCII)
@@ -88,6 +88,7 @@ pub fn process_integra_version(frame: &[u8]) -> Result<IntegraVersion, SatelErro
         language,
         stored_in_flash,
         io_count,
+        partition_count,
         read_at: Local::now(),
     })
 }
@@ -715,6 +716,41 @@ pub fn map_trouble_bit(index: u16) -> TroubleType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_process_integra_version() {
+        let mut frame = vec![0x7E, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        
+        frame[1] = 0;
+        let v = process_integra_version(&frame).unwrap();
+        assert_eq!(v.model, "INTEGRA 24");
+        assert_eq!(v.io_count, 24);
+        assert_eq!(v.partition_count, 4);
+
+        frame[1] = 1;
+        let v = process_integra_version(&frame).unwrap();
+        assert_eq!(v.model, "INTEGRA 32");
+        assert_eq!(v.io_count, 32);
+        assert_eq!(v.partition_count, 16);
+
+        frame[1] = 2;
+        let v = process_integra_version(&frame).unwrap();
+        assert_eq!(v.model, "INTEGRA 64");
+        assert_eq!(v.io_count, 64);
+        assert_eq!(v.partition_count, 32);
+
+        frame[1] = 72;
+        let v = process_integra_version(&frame).unwrap();
+        assert_eq!(v.model, "INTEGRA 256 Plus");
+        assert_eq!(v.io_count, 256);
+        assert_eq!(v.partition_count, 32);
+
+        frame[1] = 200;
+        let v = process_integra_version(&frame).unwrap();
+        assert_eq!(v.model, "Unknown INTEGRA");
+        assert_eq!(v.io_count, 0);
+        assert_eq!(v.partition_count, 0);
+    }
 
     #[test]
     fn test_process_troubles_part1() {

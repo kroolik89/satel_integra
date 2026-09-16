@@ -1,4 +1,4 @@
-﻿//! Example 2_01: Connect to Satel Integra panel and query device & module versions.
+//! Example 2_01: Connect to Satel Integra panel and query device & module versions.
 //!
 //! ============================================================================
 //! 1. 2-STEP VERSION WORKFLOW (NETWORK FETCH VS CACHE READ):
@@ -25,6 +25,7 @@
 //!     * `firmware_version`: Firmware release string (e.g. "1.22 2023-05-10").
 //!     * `language`: Configured panel language.
 //!     * `io_count`: Maximum supported inputs/outputs (24, 32, 64, 128, 256).
+//!     * `partition_count`: Maximum supported partitions (4, 16, 32).
 //!     * `stored_in_flash`: Whether the firmware runs from FLASH memory.
 //! - `EthmCapabilities` features:
 //!     * `support_32_byte_frames`: Module supports 256 I/O bitmasks (32-byte frames).
@@ -90,6 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  Firmware version: {}", ver.firmware_version);
             println!("  Language:         {}", ver.language);
             println!("  I/O capacity:     {}", ver.io_count);
+            println!("  Partition count:  {}", ver.partition_count);
             println!("  Stored in FLASH:  {}", if ver.stored_in_flash { "Yes" } else { "No" });
             println!("  Read timestamp:   {}", ver.read_at.format("%Y-%m-%d %H:%M:%S"));
         }
