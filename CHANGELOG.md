@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New `TroubleType` variants and descriptors for memory-based parsing (GSM, temperature, restart, tamper).
 - Support for trouble memory parsing across frames (0x21, 0x22, 0x24, 0x2F).
 
+### Fixed
+- Decoding bitmasks limits for 0x22, 0x1C, 0x23 (B1, B2).
+- Event emission for initial 0-values in map-based troubles (B3).
+
 ## [1.4.0] - 2026-09-16
 
 ### Added

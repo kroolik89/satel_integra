@@ -349,7 +349,8 @@ impl SatelIntegra {
         for item in items {
             match item {
                 crate::parsers::TroubleItem::Flag { trouble, memory, active } => {
-                    let changed = state.trouble_flags.insert((trouble, memory), active) != Some(active);
+                    let prev = state.trouble_flags.insert((trouble, memory), active).unwrap_or(false);
+                    let changed = prev != active;
                     if changed || emit_unchanged {
                         if memory {
                             let _ = self.event_tx.send(SatelEvent::TroubleMemory(trouble, active));
@@ -359,13 +360,15 @@ impl SatelIntegra {
                     }
                 }
                 crate::parsers::TroubleItem::AcuJamLevel { module, level } => {
-                    let changed = state.acu_jam_levels.insert(module, level) != Some(level);
+                    let prev = state.acu_jam_levels.insert(module, level).unwrap_or(0);
+                    let changed = prev != level;
                     if changed || emit_unchanged {
                         let _ = self.event_tx.send(SatelEvent::AcuJamLevel { module, level });
                     }
                 }
                 crate::parsers::TroubleItem::CmeError { source, sim, memory, code } => {
-                    let changed = state.cme_errors.insert((source, sim, memory), code) != Some(code);
+                    let prev = state.cme_errors.insert((source, sim, memory), code).unwrap_or(0);
+                    let changed = prev != code;
                     if changed || emit_unchanged {
                         let _ = self.event_tx.send(SatelEvent::CmeError { source, sim, code, memory });
                     }
@@ -374,5 +377,104 @@ impl SatelIntegra {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, RwLock, Mutex};
+    use tokio::sync::broadcast;
+    use crate::state::SatelState;
+    use crate::config::Config;
+
+    fn setup_client() -> (SatelIntegra, broadcast::Receiver<SatelEvent>) {
+        let (tx, rx) = broadcast::channel(100);
+        let state = Arc::new(RwLock::new(SatelState::new()));
+        let config = Arc::new(RwLock::new(Config::default()));
+        
+        let (internal_tx, _) = tokio::sync::mpsc::channel(1);
+        let client = SatelIntegra {
+            state,
+            config,
+            event_tx: tx,
+            tx: internal_tx,
+            worker: Arc::new(Mutex::new(None)),
+        };
+        (client, rx)
+    }
+
+    #[test]
+    fn test_t4_trouble_flag_initial_inactive() {
+        let (client, mut rx) = setup_client();
+        let data = vec![0; 47];
+        client.update_troubles_internal(SatelCommand::TroublesPart1, &data).unwrap();
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_t4_trouble_flag_initial_active() {
+        let (client, mut rx) = setup_client();
+        let mut data = vec![0; 47];
+        data[0] = 0x01;
+        client.update_troubles_internal(SatelCommand::TroublesPart1, &data).unwrap();
+        let event = rx.try_recv().unwrap();
+        match event {
+            SatelEvent::Trouble(crate::state::TroubleType::TechnicalZoneTrouble(1), true) => {}
+            _ => panic!("Expected Trouble for TechnicalZoneTrouble(1)"),
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_t4_trouble_flag_deactivation() {
+        let (client, mut rx) = setup_client();
+        let mut data = vec![0; 47];
+        data[0] = 0x01;
+        client.update_troubles_internal(SatelCommand::TroublesPart1, &data).unwrap();
+        let _ = rx.try_recv().unwrap();
+
+        data[0] = 0x00;
+        client.update_troubles_internal(SatelCommand::TroublesPart1, &data).unwrap();
+        let event = rx.try_recv().unwrap();
+        match event {
+            SatelEvent::Trouble(crate::state::TroubleType::TechnicalZoneTrouble(1), false) => {}
+            _ => panic!("Expected restore Trouble event"),
+        }
+    }
+
+    #[test]
+    fn test_t4_acu_jam_level_initial_zero() {
+        let (client, mut rx) = setup_client();
+        let data = vec![0; 60];
+        client.update_troubles_internal(SatelCommand::TroublesPart3, &data).unwrap();
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_t4_acu_jam_level_change() {
+        let (client, mut rx) = setup_client();
+        let mut data = vec![0; 60];
+        data[0] = 5;
+        client.update_troubles_internal(SatelCommand::TroublesPart3, &data).unwrap();
+        match rx.try_recv().unwrap() {
+            SatelEvent::AcuJamLevel { module: 1, level: 5 } => {}
+            _ => panic!("Expected AcuJamLevel"),
+        }
+
+        data[0] = 0;
+        client.update_troubles_internal(SatelCommand::TroublesPart3, &data).unwrap();
+        match rx.try_recv().unwrap() {
+            SatelEvent::AcuJamLevel { module: 1, level: 0 } => {}
+            _ => panic!("Expected AcuJamLevel restore"),
+        }
+    }
+
+    #[test]
+    fn test_t4_cme_error_initial_zero() {
+        let (client, mut rx) = setup_client();
+        let data = vec![0; 64];
+        client.update_troubles_internal(SatelCommand::TroublesPart8, &data).unwrap();
+        assert!(rx.try_recv().is_err());
     }
 }

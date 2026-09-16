@@ -172,7 +172,16 @@ enum FieldRule {
         constructor: fn(u8) -> TroubleType,
     },
     /// Custom extractor returning a list of TroubleItem
-    Custom(fn(&[u8], bool) -> Vec<TroubleItem>),
+    Custom(bool, fn(&[u8], bool) -> Vec<TroubleItem>),
+    /// Bit vector field with a limit on how many bits to process
+    BitmaskLimit {
+        offset: usize,
+        length: usize,
+        limit: usize,
+        start_num: u16,
+        memory: bool,
+        constructor: fn(u16) -> TroubleType,
+    },
 }
 
 fn bitmask(offset: usize, length: usize, start_num: u16, memory: bool, constructor: fn(u16) -> TroubleType) -> FieldRule {
@@ -183,8 +192,12 @@ fn module_mask(offset: usize, memory: bool, constructor: fn(u8) -> TroubleType) 
     FieldRule::ModuleMask { offset, memory, constructor }
 }
 
-fn custom(extractor: fn(&[u8], bool) -> Vec<TroubleItem>) -> FieldRule {
-    FieldRule::Custom(extractor)
+fn custom(memory: bool, extractor: fn(&[u8], bool) -> Vec<TroubleItem>) -> FieldRule {
+    FieldRule::Custom(memory, extractor)
+}
+
+fn bitmask_limit(offset: usize, length: usize, limit: usize, start_num: u16, memory: bool, constructor: fn(u16) -> TroubleType) -> FieldRule {
+    FieldRule::BitmaskLimit { offset, length, limit, start_num, memory, constructor }
 }
 
 fn decode_system_troubles(data: &[u8], memory: bool) -> Vec<TroubleItem> {
@@ -346,22 +359,22 @@ fn get_rules(cmd: u8) -> Option<(usize, Vec<FieldRule>)> {
             bitmask(16, 8, 1, false, |x| TroubleType::ExpanderAcLoss(x as u8)),
             bitmask(24, 8, 1, false, |x| TroubleType::ExpanderBatteryLow(x as u8)),
             bitmask(32, 8, 1, false, |x| TroubleType::ExpanderBatteryMissing(x as u8)),
-            custom(|data, _| decode_system_troubles(data, false)),
+            custom(false, |data, memory| decode_system_troubles(data, memory)),
             module_mask(43, false, |x| TroubleType::EthmPingTrouble(x as u8)),
             module_mask(44, false, |x| TroubleType::EthmServerIdError(x as u8)),
             module_mask(45, false, |x| TroubleType::EthmSatelServerConnectionError(x as u8)),
-            custom(|data, _| decode_ethm_ptsa_status(data, false)),
+            custom(false, |data, memory| decode_ethm_ptsa_status(data, memory)),
         ])),
         0x20 => Some((47, vec![
             bitmask(0, 16, 1, true, TroubleType::TechnicalZoneTrouble),
             bitmask(16, 8, 1, true, |x| TroubleType::ExpanderAcLoss(x as u8)),
             bitmask(24, 8, 1, true, |x| TroubleType::ExpanderBatteryLow(x as u8)),
             bitmask(32, 8, 1, true, |x| TroubleType::ExpanderBatteryMissing(x as u8)),
-            custom(|data, _| decode_system_troubles(data, true)),
+            custom(true, |data, memory| decode_system_troubles(data, memory)),
             module_mask(43, true, |x| TroubleType::EthmPingTrouble(x as u8)),
             module_mask(44, true, |x| TroubleType::EthmServerIdError(x as u8)),
             module_mask(45, true, |x| TroubleType::EthmSatelServerConnectionError(x as u8)),
-            custom(|data, _| decode_ethm_ptsa_status(data, true)),
+            custom(true, |data, memory| decode_ethm_ptsa_status(data, memory)),
         ])),
         0x1C => Some((26, vec![
             bitmask(0, 8, 1, false, |x| TroubleType::ExpanderCardReaderHeadA(x as u8)),
@@ -376,7 +389,7 @@ fn get_rules(cmd: u8) -> Option<(usize, Vec<FieldRule>)> {
             bitmask(24, 2, 1, true, |x| TroubleType::ExpanderAcuJammedOrShortCircuit(x as u8)),
             module_mask(26, true, |x| TroubleType::KeypadRestart(x as u8)),
             bitmask(27, 8, 1, true, |x| TroubleType::ExpanderRestart(x as u8)),
-            custom(|data, _| {
+            custom(true, |data, memory| {
                 let mut items = Vec::new();
                 if data.len() >= 39 {
                     let cme1 = u16::from_be_bytes([data[35], data[36]]);
@@ -388,14 +401,14 @@ fn get_rules(cmd: u8) -> Option<(usize, Vec<FieldRule>)> {
             }),
         ])),
         0x1D => Some((60, vec![
-            custom(|data, memory| decode_acu_jam_level(data, memory)),
+            custom(false, |data, memory| decode_acu_jam_level(data, memory)),
             bitmask(15, 15, 1, false, |z| TroubleType::WirelessDeviceLowBattery { zone_id: z }),
             bitmask(30, 15, 1, false, |z| TroubleType::WirelessDeviceNoComm { zone_id: z }),
             bitmask(45, 15, 1, false, |o| TroubleType::WirelessOutputNoComm { output_id: o }),
         ])),
         0x22 => Some((60, vec![
-            bitmask(0, 2, 1, true, |x| TroubleType::ExpanderAcuJammedOrShortCircuit(x as u8)),
-            bitmask(2, 2, 1, true, |x| TroubleType::ExpanderAcuJammedOrShortCircuit(x as u8)),
+            bitmask_limit(0, 2, 14, 17, false, |x| TroubleType::ExpanderAcuJammedOrShortCircuit(x as u8)),
+            bitmask_limit(2, 2, 14, 17, true, |x| TroubleType::ExpanderAcuJammedOrShortCircuit(x as u8)),
             bitmask(15, 15, 1, true, |z| TroubleType::WirelessDeviceLowBattery { zone_id: z }),
             bitmask(30, 15, 1, true, |z| TroubleType::WirelessDeviceNoComm { zone_id: z }),
             bitmask(45, 15, 1, true, |o| TroubleType::WirelessOutputNoComm { output_id: o }),
@@ -409,7 +422,7 @@ fn get_rules(cmd: u8) -> Option<(usize, Vec<FieldRule>)> {
             bitmask(19, 8, 1, false, |x| TroubleType::ExpanderTamper(x as u8)),
             module_mask(27, false, |x| TroubleType::KeypadTamper(x as u8)),
             module_mask(28, false, |x| TroubleType::KeypadInitError(x as u8)),
-            custom(|data, memory| decode_aux_stm(data, memory)),
+            custom(false, |data, memory| decode_aux_stm(data, memory)),
         ])),
         0x23 => Some((30, vec![
             bitmask(0, 8, 1, true, |x| TroubleType::ExpanderNoComm(x as u8)),
@@ -420,7 +433,7 @@ fn get_rules(cmd: u8) -> Option<(usize, Vec<FieldRule>)> {
             bitmask(19, 8, 1, true, |x| TroubleType::ExpanderTamper(x as u8)),
             module_mask(27, true, |x| TroubleType::KeypadTamper(x as u8)),
             module_mask(28, true, |x| TroubleType::KeypadInitError(x as u8)),
-            custom(|data, memory| decode_aux_stm(data, memory)),
+            custom(true, |data, memory| decode_aux_stm(data, memory)),
         ])),
         0x1F => Some((31, vec![
             module_mask(0, false, |x| TroubleType::MasterKeyFobLowBattery(x as u8)),
@@ -444,7 +457,7 @@ fn get_rules(cmd: u8) -> Option<(usize, Vec<FieldRule>)> {
         0x2D => Some((47, vec![
             bitmask(0, 16, 129, false, TroubleType::TechnicalZoneTrouble),
             bitmask(16, 16, 129, true, TroubleType::TechnicalZoneTrouble),
-            custom(|data, memory| decode_acu_jam_level_16_30(data, memory)),
+            custom(false, |data, memory| decode_acu_jam_level_16_30(data, memory)),
         ])),
         0x2F => Some((48, vec![
             bitmask(0, 16, 129, true, TroubleType::ZoneLongViolationTrouble),
@@ -452,10 +465,10 @@ fn get_rules(cmd: u8) -> Option<(usize, Vec<FieldRule>)> {
             bitmask(32, 16, 129, true, TroubleType::ZoneTamperTrouble),
         ])),
         0x30 => Some((64, vec![
-            custom(|data, _| decode_gsm_block(data, false)),
+            custom(false, |data, memory| decode_gsm_block(data, memory)),
         ])),
         0x31 => Some((64, vec![
-            custom(|data, _| decode_gsm_block(data, true)),
+            custom(true, |data, memory| decode_gsm_block(data, memory)),
         ])),
         _ => None,
     }
@@ -493,8 +506,22 @@ pub fn decode_troubles(cmd: u8, data: &[u8]) -> Result<Vec<TroubleItem>, SatelEr
                     });
                 }
             }
-            FieldRule::Custom(extractor) => {
-                items.extend(extractor(data, false));
+            FieldRule::BitmaskLimit { offset, length, limit, start_num, memory, constructor } => {
+                let slice = &data[offset..offset+length];
+                let bits = extract_bits(slice);
+                for (i, &active) in bits.iter().enumerate() {
+                    if i >= limit {
+                        break;
+                    }
+                    items.push(TroubleItem::Flag {
+                        trouble: constructor(start_num + i as u16),
+                        memory,
+                        active,
+                    });
+                }
+            }
+            FieldRule::Custom(memory, extractor) => {
+                items.extend(extractor(data, memory));
             }
         }
     }
@@ -972,5 +999,441 @@ pub fn process_auto_read_response(
         items,
         success_count,
         total_requested,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{TroubleType, CmeSource};
+
+    #[test]
+    fn test_process_integra_version() {
+        let mut frame = vec![0x7E, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        
+        frame[1] = 0;
+        let v = process_integra_version(&frame).unwrap();
+        assert_eq!(v.model, "INTEGRA 24");
+        assert_eq!(v.io_count, 24);
+        assert_eq!(v.partition_count, 4);
+
+        frame[1] = 1;
+        let v = process_integra_version(&frame).unwrap();
+        assert_eq!(v.model, "INTEGRA 32");
+        assert_eq!(v.io_count, 32);
+        assert_eq!(v.partition_count, 16);
+
+        frame[1] = 2;
+        let v = process_integra_version(&frame).unwrap();
+        assert_eq!(v.model, "INTEGRA 64");
+        assert_eq!(v.io_count, 64);
+        assert_eq!(v.partition_count, 32);
+
+        frame[1] = 72;
+        let v = process_integra_version(&frame).unwrap();
+        assert_eq!(v.model, "INTEGRA 256 Plus");
+        assert_eq!(v.io_count, 256);
+        assert_eq!(v.partition_count, 32);
+
+        frame[1] = 200;
+        let v = process_integra_version(&frame).unwrap();
+        assert_eq!(v.model, "Unknown INTEGRA");
+        assert_eq!(v.io_count, 0);
+        assert_eq!(v.partition_count, 0);
+    }
+
+    fn check_single_active(cmd: u8, data: &[u8], expected_item: TroubleItem) {
+        let items = decode_troubles(cmd, data).unwrap();
+        let active_items: Vec<_> = items.into_iter().filter(|i| match i {
+            TroubleItem::Flag { active, .. } => *active,
+            TroubleItem::AcuJamLevel { level, .. } => *level != 0,
+            TroubleItem::CmeError { code, .. } => *code != 0,
+        }).collect();
+        
+        assert_eq!(active_items.len(), 1, "Expected exactly 1 active item, got {:?}", active_items);
+        assert_eq!(active_items[0], expected_item);
+    }
+
+    fn check_zero_active(cmd: u8, data: &[u8]) {
+        let items = decode_troubles(cmd, data).unwrap();
+        let active_items: Vec<_> = items.into_iter().filter(|i| match i {
+            TroubleItem::Flag { active, .. } => *active,
+            TroubleItem::AcuJamLevel { level, .. } => *level != 0,
+            TroubleItem::CmeError { code, .. } => *code != 0,
+        }).collect();
+        assert_eq!(active_items.len(), 0, "Expected 0 active items, got {:?}", active_items);
+    }
+
+    #[test]
+    fn test_t1_0x1b_byte_0_bit_0() {
+        let mut data = vec![0; 47];
+        data[0] |= 1 << 0;
+        check_single_active(0x1B, &data, TroubleItem::Flag { trouble: TroubleType::TechnicalZoneTrouble(1), memory: false, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x1b_byte_15_bit_7() {
+        let mut data = vec![0; 47];
+        data[15] |= 1 << 7;
+        check_single_active(0x1B, &data, TroubleItem::Flag { trouble: TroubleType::TechnicalZoneTrouble(128), memory: false, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x1b_byte_43_bit_0() {
+        let mut data = vec![0; 47];
+        data[43] |= 1 << 0;
+        check_single_active(0x1B, &data, TroubleItem::Flag { trouble: TroubleType::EthmPingTrouble(1), memory: false, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x1b_byte_43_bit_7() {
+        let mut data = vec![0; 47];
+        data[43] |= 1 << 7;
+        check_single_active(0x1B, &data, TroubleItem::Flag { trouble: TroubleType::EthmPingTrouble(8), memory: false, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x1b_byte_40_bit_7() {
+        let mut data = vec![0; 47];
+        data[40] |= 1 << 7;
+        check_single_active(0x1B, &data, TroubleItem::Flag { trouble: TroubleType::MainBoardAcLoss, memory: false, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x20_byte_45_bit_2() {
+        let mut data = vec![0; 47];
+        data[45] |= 1 << 2;
+        check_single_active(0x20, &data, TroubleItem::Flag { trouble: TroubleType::EthmSatelServerConnectionError(3), memory: true, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x1c_byte_16_bit_0() {
+        let mut data = vec![0; 26];
+        data[16] |= 1 << 0;
+        check_single_active(0x1C, &data, TroubleItem::Flag { trouble: TroubleType::ExpanderSupplyOverload(1), memory: false, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x1d_byte_0_val_5() {
+        let mut data = vec![0; 60];
+        data[0] = 5;
+        check_single_active(0x1D, &data, TroubleItem::AcuJamLevel { module: 1, level: 5 });
+    }
+
+    #[test]
+    fn test_t1_0x1d_byte_14_val_9() {
+        let mut data = vec![0; 60];
+        data[14] = 9;
+        check_single_active(0x1D, &data, TroubleItem::AcuJamLevel { module: 15, level: 9 });
+    }
+
+    #[test]
+    fn test_t1_0x1d_byte_59_bit_7() {
+        let mut data = vec![0; 60];
+        data[59] |= 1 << 7;
+        check_single_active(0x1D, &data, TroubleItem::Flag { trouble: TroubleType::WirelessOutputNoComm { output_id: 120 }, memory: false, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x1e_byte_29_val_80() {
+        let mut data = vec![0; 30];
+        data[29] = 0x80;
+        check_single_active(0x1E, &data, TroubleItem::Flag { trouble: TroubleType::AuxiliaryStmTroubles, memory: false, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x23_byte_29_val_01() {
+        let mut data = vec![0; 30];
+        data[29] = 0x01;
+        check_single_active(0x23, &data, TroubleItem::Flag { trouble: TroubleType::AuxiliaryStmTroubles, memory: true, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x1f_byte_30_bit_7() {
+        let mut data = vec![0; 31];
+        data[30] |= 1 << 7;
+        check_single_active(0x1F, &data, TroubleItem::Flag { trouble: TroubleType::UserKeyFobLowBattery { user_id: 240 }, memory: false, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x21_byte_26_bit_7() {
+        let mut data = vec![0; 39];
+        data[26] |= 1 << 7;
+        check_single_active(0x21, &data, TroubleItem::Flag { trouble: TroubleType::KeypadRestart(8), memory: true, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x21_byte_34_bit_7() {
+        let mut data = vec![0; 39];
+        data[34] |= 1 << 7;
+        check_single_active(0x21, &data, TroubleItem::Flag { trouble: TroubleType::ExpanderRestart(64), memory: true, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x21_byte_35_36() {
+        let mut data = vec![0; 39];
+        data[35] = 0x01;
+        data[36] = 0x23;
+        check_single_active(0x21, &data, TroubleItem::CmeError { source: CmeSource::Panel, sim: 1, memory: false, code: 0x0123 });
+    }
+
+    #[test]
+    fn test_t1_0x21_byte_37_38() {
+        let mut data = vec![0; 39];
+        data[37] = 0x00;
+        data[38] = 0x05;
+        check_single_active(0x21, &data, TroubleItem::CmeError { source: CmeSource::Panel, sim: 1, memory: true, code: 0x0005 });
+    }
+
+    #[test]
+    fn test_t1_0x22_byte_0_bit_0() {
+        let mut data = vec![0; 60];
+        data[0] |= 1 << 0;
+        check_single_active(0x22, &data, TroubleItem::Flag { trouble: TroubleType::ExpanderAcuJammedOrShortCircuit(17), memory: false, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x22_byte_1_bit_5() {
+        let mut data = vec![0; 60];
+        data[1] |= 1 << 5;
+        check_single_active(0x22, &data, TroubleItem::Flag { trouble: TroubleType::ExpanderAcuJammedOrShortCircuit(30), memory: false, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x22_byte_3_bit_5() {
+        let mut data = vec![0; 60];
+        data[3] |= 1 << 5;
+        check_single_active(0x22, &data, TroubleItem::Flag { trouble: TroubleType::ExpanderAcuJammedOrShortCircuit(30), memory: true, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x22_byte_1_bit_6() {
+        let mut data = vec![0; 60];
+        data[1] |= 1 << 6;
+        check_zero_active(0x22, &data);
+    }
+
+    #[test]
+    fn test_t1_0x22_byte_5_val_ff() {
+        let mut data = vec![0; 60];
+        data[5] = 0xFF;
+        check_zero_active(0x22, &data);
+    }
+
+    #[test]
+    fn test_t1_0x22_byte_15_bit_0() {
+        let mut data = vec![0; 60];
+        data[15] |= 1 << 0;
+        check_single_active(0x22, &data, TroubleItem::Flag { trouble: TroubleType::WirelessDeviceLowBattery { zone_id: 1 }, memory: true, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x24_byte_32_bit_0() {
+        let mut data = vec![0; 48];
+        data[32] |= 1 << 0;
+        check_single_active(0x24, &data, TroubleItem::Flag { trouble: TroubleType::ZoneTamperTrouble(1), memory: true, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x24_byte_0_bit_0() {
+        let mut data = vec![0; 48];
+        data[0] |= 1 << 0;
+        check_single_active(0x24, &data, TroubleItem::Flag { trouble: TroubleType::ZoneLongViolationTrouble(1), memory: true, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x24_byte_16_bit_0() {
+        let mut data = vec![0; 48];
+        data[16] |= 1 << 0;
+        check_single_active(0x24, &data, TroubleItem::Flag { trouble: TroubleType::ZoneNoViolationTrouble(1), memory: true, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x2c_byte_0_bit_0() {
+        let mut data = vec![0; 45];
+        data[0] |= 1 << 0;
+        check_single_active(0x2C, &data, TroubleItem::Flag { trouble: TroubleType::WirelessDeviceLowBattery { zone_id: 121 }, memory: false, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x2c_byte_14_bit_7() {
+        let mut data = vec![0; 45];
+        data[14] |= 1 << 7;
+        check_single_active(0x2C, &data, TroubleItem::Flag { trouble: TroubleType::WirelessDeviceLowBattery { zone_id: 240 }, memory: false, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x2d_byte_0_bit_0() {
+        let mut data = vec![0; 47];
+        data[0] |= 1 << 0;
+        check_single_active(0x2D, &data, TroubleItem::Flag { trouble: TroubleType::TechnicalZoneTrouble(129), memory: false, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x2d_byte_16_bit_0() {
+        let mut data = vec![0; 47];
+        data[16] |= 1 << 0;
+        check_single_active(0x2D, &data, TroubleItem::Flag { trouble: TroubleType::TechnicalZoneTrouble(129), memory: true, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x2d_byte_31_bit_7() {
+        let mut data = vec![0; 47];
+        data[31] |= 1 << 7;
+        check_single_active(0x2D, &data, TroubleItem::Flag { trouble: TroubleType::TechnicalZoneTrouble(256), memory: true, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x2d_byte_32_val_7() {
+        let mut data = vec![0; 47];
+        data[32] = 7;
+        check_single_active(0x2D, &data, TroubleItem::AcuJamLevel { module: 16, level: 7 });
+    }
+
+    #[test]
+    fn test_t1_0x2d_byte_46_val_3() {
+        let mut data = vec![0; 47];
+        data[46] = 3;
+        check_single_active(0x2D, &data, TroubleItem::AcuJamLevel { module: 30, level: 3 });
+    }
+
+    #[test]
+    fn test_t1_0x2f_byte_47_bit_7() {
+        let mut data = vec![0; 48];
+        data[47] |= 1 << 7;
+        check_single_active(0x2F, &data, TroubleItem::Flag { trouble: TroubleType::ZoneTamperTrouble(256), memory: true, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x30_byte_0_bit_0() {
+        let mut data = vec![0; 64];
+        data[0] |= 1 << 0;
+        check_single_active(0x30, &data, TroubleItem::Flag { trouble: TroubleType::GsmEthmStation1Error(0), memory: false, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x30_byte_57_bit_3() {
+        let mut data = vec![0; 64];
+        data[57] |= 1 << 3;
+        check_single_active(0x30, &data, TroubleItem::Flag { trouble: TroubleType::GsmSimPinError { module: 7, sim: 2 }, memory: false, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x30_byte_62_63() {
+        let mut data = vec![0; 64];
+        data[62] = 0x00;
+        data[63] = 0x10;
+        check_single_active(0x30, &data, TroubleItem::CmeError { source: CmeSource::GsmModule(7), sim: 2, memory: false, code: 0x0010 });
+    }
+
+    #[test]
+    fn test_t1_0x30_byte_3_bit_1() {
+        let mut data = vec![0; 64];
+        data[3] |= 1 << 1;
+        check_single_active(0x30, &data, TroubleItem::Flag { trouble: TroubleType::GenericTrouble { part: 7, bit: 25 }, memory: false, active: true });
+    }
+
+    #[test]
+    fn test_t1_0x31_byte_10_bit_2() {
+        let mut data = vec![0; 64];
+        data[10] |= 1 << 2;
+        check_single_active(0x31, &data, TroubleItem::Flag { trouble: TroubleType::GsmJamming(1), memory: true, active: true });
+    }
+
+    #[test]
+    fn test_t2_lengths() {
+        let lengths = [
+            (0x1B, 47), (0x20, 47), (0x1C, 26), (0x21, 39),
+            (0x1D, 60), (0x22, 60), (0x1E, 30), (0x23, 30),
+            (0x1F, 31), (0x24, 48), (0x2C, 45), (0x2E, 45),
+            (0x2D, 47), (0x2F, 48), (0x30, 64), (0x31, 64),
+        ];
+        
+        for (cmd, exp) in lengths {
+            let data_ok = vec![0; exp];
+            assert!(decode_troubles(cmd, &data_ok).is_ok());
+            
+            let data_err = vec![0; exp - 1];
+            assert!(matches!(decode_troubles(cmd, &data_err), Err(crate::error::SatelError::InvalidFrame)));
+        }
+        
+        let data_unk = vec![0; 100];
+        assert!(matches!(decode_troubles(0x25, &data_unk), Err(crate::error::SatelError::InvalidFrame)));
+    }
+
+    #[test]
+    fn test_t3_catalog_consistency() {
+        let lengths = [
+            (0x1B, 47), (0x20, 47), (0x1C, 26), (0x21, 39),
+            (0x1D, 60), (0x22, 60), (0x1E, 30), (0x23, 30),
+            (0x1F, 31), (0x24, 48), (0x2C, 45), (0x2E, 45),
+            (0x2D, 47), (0x2F, 48), (0x30, 64), (0x31, 64),
+        ];
+
+        let mut states_found = std::collections::HashMap::new();
+        let mut memories_found = std::collections::HashMap::new();
+
+        for (cmd, exp) in lengths {
+            let data = vec![0xFF; exp];
+            let items = decode_troubles(cmd, &data).unwrap();
+            
+            for item in items {
+                if let TroubleItem::Flag { trouble, memory, active } = item {
+                    if !active { continue; }
+                    if matches!(trouble, TroubleType::GenericTrouble { .. }) {
+                        continue;
+                    }
+                    
+                    let key = trouble.key().expect("Missing key");
+                    let address = trouble.address();
+                    
+                    let desc = TroubleType::catalog().iter().find(|d| d.key == key).expect(&format!("Missing descriptor for {}", key));
+                    
+                    if memory {
+                        assert!(desc.has_memory, "{} expects has_memory", key);
+                        memories_found.entry(key).or_insert_with(Vec::new).push(address);
+                    } else {
+                        assert!(desc.has_state, "{} expects has_state", key);
+                        states_found.entry(key).or_insert_with(Vec::new).push(address);
+                    }
+                    
+                    match (desc.addressing, address) {
+                        (crate::trouble_catalog::TroubleAddressing::Single, _) => {}
+                        (crate::trouble_catalog::TroubleAddressing::Range { from, to }, Some(crate::trouble_catalog::TroubleAddress::One(n))) => {
+                            assert!(n >= from && n <= to, "{} address {} out of bounds", key, n);
+                        }
+                        (crate::trouble_catalog::TroubleAddressing::Pair { a_from, a_to, b_from, b_to }, Some(crate::trouble_catalog::TroubleAddress::Pair(a, b))) => {
+                            assert!(a >= a_from && a <= a_to, "{} addr A {} out of bounds", key, a);
+                            assert!(b >= b_from && b <= b_to, "{} addr B {} out of bounds", key, b);
+                        }
+                        _ => panic!("Address mismatch for {}", key),
+                    }
+                }
+            }
+        }
+        
+        for desc in TroubleType::catalog() {
+            if desc.has_state {
+                assert!(states_found.contains_key(desc.key), "State for {} never found", desc.key);
+            }
+            if desc.has_memory {
+                assert!(memories_found.contains_key(desc.key), "Memory for {} never found", desc.key);
+            }
+            
+            if let crate::trouble_catalog::TroubleAddressing::Range { from, to } = desc.addressing {
+                if desc.has_state {
+                    let mut nums: Vec<_> = states_found[desc.key].iter().map(|a| match a { Some(crate::trouble_catalog::TroubleAddress::One(n)) => *n, _ => unreachable!() }).collect();
+                    nums.sort();
+                    nums.dedup();
+                    assert_eq!(nums, (from..=to).collect::<Vec<_>>(), "State range incomplete for {}", desc.key);
+                }
+                if desc.has_memory {
+                    let mut nums: Vec<_> = memories_found[desc.key].iter().map(|a| match a { Some(crate::trouble_catalog::TroubleAddress::One(n)) => *n, _ => unreachable!() }).collect();
+                    nums.sort();
+                    nums.dedup();
+                    assert_eq!(nums, (from..=to).collect::<Vec<_>>(), "Memory range incomplete for {}", desc.key);
+                }
+            }
+        }
     }
 }

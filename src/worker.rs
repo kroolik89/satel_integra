@@ -569,7 +569,7 @@ impl SatelCommunicationWorker {
         state: &SatelStateHandle,
         state_worker_tx: &Option<mpsc::Sender<StateWorkerMessage>>,
     ) -> Result<(), SatelError> {
-        let Some(ref mut stream) = stream_opt else {
+        let Some(stream) = stream_opt else {
             return Ok(());
         };
         match timeout(Duration::from_millis(100), stream.next()).await {
