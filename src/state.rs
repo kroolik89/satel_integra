@@ -505,11 +505,36 @@ pub struct TroublesPart2Data {
     pub read_at: DateTime<Local>,
 }
 
+/// Parsed trouble memory frame for Part 2 (0x21 - 39 bytes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TroublesMemoryPart2Data {
+    pub card_readers_head_a_or_synchro: Vec<bool>,
+    pub card_readers_head_b_or_charging: Vec<bool>,
+    pub expanders_supply_overload: Vec<bool>,
+    pub acu_jammed_or_short_circuit: Vec<bool>,
+    pub keypad_restart: Vec<bool>,
+    pub expander_restart: Vec<bool>,
+    pub sim_cme_error: u16,
+    pub sim_cme_error_memory: u16,
+    pub read_at: DateTime<Local>,
+}
+
 /// Parsed trouble frame for Part 3 (0x1D / 0x22 - 60 bytes).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TroublesPart3Data {
     pub is_memory: bool,
     pub acu_jam_levels: Vec<u8>,
+    pub wireless_devices_low_battery: Vec<bool>,
+    pub wireless_devices_no_comm: Vec<bool>,
+    pub wireless_outputs_no_comm: Vec<bool>,
+    pub read_at: DateTime<Local>,
+}
+
+/// Parsed trouble memory frame for Part 3 (0x22 - 60 bytes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TroublesMemoryPart3Data {
+    pub acu_jammed_or_short_circuit: Vec<bool>,
+    pub acu_jammed_or_short_circuit_memory: Vec<bool>,
     pub wireless_devices_low_battery: Vec<bool>,
     pub wireless_devices_no_comm: Vec<bool>,
     pub wireless_outputs_no_comm: Vec<bool>,
@@ -541,6 +566,15 @@ pub struct TroublesPart5Data {
     pub read_at: DateTime<Local>,
 }
 
+/// Parsed trouble memory frame for Part 5 (0x24 - 48 bytes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TroublesMemoryPart5Data {
+    pub zone_long_violation: Vec<bool>,
+    pub zone_no_violation: Vec<bool>,
+    pub zone_tamper: Vec<bool>,
+    pub read_at: DateTime<Local>,
+}
+
 /// Parsed trouble frame for Part 6 (0x2C / 0x2E - 45 bytes - Integra 256).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TroublesPart6Data {
@@ -558,6 +592,15 @@ pub struct TroublesPart7Data {
     pub technical_zones: Vec<bool>,
     pub technical_zones_memory: Vec<bool>,
     pub acu_jam_levels: Vec<u8>,
+    pub read_at: DateTime<Local>,
+}
+
+/// Parsed trouble memory frame for Part 7 (0x2F - 48 bytes - Integra 256).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TroublesMemoryPart7Data {
+    pub zone_long_violation: Vec<bool>,
+    pub zone_no_violation: Vec<bool>,
+    pub zone_tamper: Vec<bool>,
     pub read_at: DateTime<Local>,
 }
 
@@ -607,12 +650,23 @@ pub struct TroublesPart8Data {
 pub enum TroublesData {
     Part1(TroublesPart1Data),
     Part2(TroublesPart2Data),
+    MemoryPart2(TroublesMemoryPart2Data),
     Part3(TroublesPart3Data),
+    MemoryPart3(TroublesMemoryPart3Data),
     Part4(TroublesPart4Data),
     Part5(TroublesPart5Data),
+    MemoryPart5(TroublesMemoryPart5Data),
     Part6(TroublesPart6Data),
     Part7(TroublesPart7Data),
+    MemoryPart7(TroublesMemoryPart7Data),
     Part8(TroublesPart8Data),
+}
+
+/// Source of CME error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CmeSource {
+    GsmModule(u8),
+    Panel,
 }
 
 /// System trouble variants for Satel Integra panels (matching 100% of protocol spec).
@@ -661,12 +715,13 @@ pub enum TroubleType {
     KeypadSubstituted(u8),
     KeypadTamper(u8),
     KeypadInitError(u8),
+    KeypadRestart(u8),
 
     // --- Communication modules (ETHM-1 / INT-GSM / PTSA) ---
     EthmNoLanCable(u8),
-    EthmPingTrouble,
-    EthmServerIdError,
-    EthmSatelServerConnectionError,
+    EthmPingTrouble(u8),
+    EthmServerIdError(u8),
+    EthmSatelServerConnectionError(u8),
     EthmMonitoringStation1Error,
     EthmMonitoringStation2Error,
     GprsMonitoringStation1Error,
@@ -675,30 +730,44 @@ pub enum TroubleType {
     IpMonitoringStation2Trouble,
     TimeServerTrouble,
     GsmInitError,
-    IntGsmSignalLoss,
-    GsmJamming(u8),
+    GsmEthmStation1Error(u8),
+    GsmEthmStation2Error(u8),
+    GsmGprsSim1Station1Error(u8),
+    GsmGprsSim1Station2Error(u8),
+    GsmGprsSim2Station1Error(u8),
+    GsmGprsSim2Station2Error(u8),
+    GsmSmsSim1Station1Error(u8),
+    GsmSmsSim1Station2Error(u8),
+    GsmSmsSim2Station1Error(u8),
+    GsmSmsSim2Station2Error(u8),
     GsmSimPinError { module: u8, sim: u8 },
     GsmSimLoggingError { module: u8, sim: u8 },
     GsmSimCreditLow { module: u8, sim: u8 },
     GsmSimSmsError { module: u8, sim: u8 },
+    GsmJamming(u8),
     GsmSettingsCrcError(u8),
     GsmModuleMissing(u8),
     GsmModuleChanged(u8),
     GsmServerConnError(u8),
     GsmMailServerConnError(u8),
     GsmNtpServerConnError(u8),
-    GsmCmeError { module: u8, sim: u8, code: u16 },
-    GsmTrouble { module_address: u8, desc: &'static str },
 
     // --- Wireless devices (ABAX / ABAX 2) ---
     WirelessDeviceLowBattery { zone_id: u16 },
     WirelessDeviceNoComm { zone_id: u16 },
     WirelessOutputNoComm { output_id: u16 },
-    AcuModuleJamLevel(u8),
 
     // --- Key fobs ---
     MasterKeyFobLowBattery(u8),
     UserKeyFobLowBattery { user_id: u16 },
+
+    // --- Zone specific (memory) ---
+    ZoneLongViolationTrouble(u16),
+    ZoneNoViolationTrouble(u16),
+    ZoneTamperTrouble(u16),
+
+    // --- Expander Restarts ---
+    ExpanderRestart(u8),
 
     // --- Other ---
     AuxiliaryStmTroubles,
@@ -747,11 +816,12 @@ impl TroubleType {
             Self::KeypadSubstituted(kpd) => format!("Keypad #{:02}: Substituted Keypad", kpd),
             Self::KeypadTamper(kpd) => format!("Keypad #{:02}: Tamper / Sabotage", kpd),
             Self::KeypadInitError(kpd) => format!("Keypad #{:02}: Initialization Error", kpd),
+            Self::KeypadRestart(kpd) => format!("Keypad #{:02}: Restart Latched", kpd),
 
             Self::EthmNoLanCable(mod_id) => format!("ETHM-1 #{:02}: Ethernet LAN Cable Unplugged", mod_id),
-            Self::EthmPingTrouble => "ETHM-1: Ping Network Test Failed".to_string(),
-            Self::EthmServerIdError => "ETHM-1: SATEL Server MAC/ID Verification Error".to_string(),
-            Self::EthmSatelServerConnectionError => "ETHM-1: No Connection to SATEL Server".to_string(),
+            Self::EthmPingTrouble(mod_id) => format!("ETHM-1 #{:02}: Ping Network Test Failed", mod_id),
+            Self::EthmServerIdError(mod_id) => format!("ETHM-1 #{:02}: SATEL Server MAC/ID Verification Error", mod_id),
+            Self::EthmSatelServerConnectionError(mod_id) => format!("ETHM-1 #{:02}: No Connection to SATEL Server", mod_id),
             Self::EthmMonitoringStation1Error => "ETHM-1: Monitoring Station 1 Connection Error".to_string(),
             Self::EthmMonitoringStation2Error => "ETHM-1: Monitoring Station 2 Connection Error".to_string(),
             Self::GprsMonitoringStation1Error => "INT-GSM: GPRS Monitoring Station 1 Error".to_string(),
@@ -760,28 +830,42 @@ impl TroubleType {
             Self::IpMonitoringStation2Trouble => "IP Monitoring: Station 2 Communication Trouble".to_string(),
             Self::TimeServerTrouble => "Network: NTP Time Synchronization Server Error".to_string(),
             Self::GsmInitError => "INT-GSM: GSM Module Initialization Error".to_string(),
-            Self::IntGsmSignalLoss => "INT-GSM: Cellular Signal Lost".to_string(),
-            Self::GsmJamming(addr) => format!("INT-GSM (Addr {}): Cellular Jamming Detected", addr),
+
+            Self::GsmEthmStation1Error(addr) => format!("INT-GSM (Addr {}): No ETHM connection to monitoring station 1", addr),
+            Self::GsmEthmStation2Error(addr) => format!("INT-GSM (Addr {}): No ETHM connection to monitoring station 2", addr),
+            Self::GsmGprsSim1Station1Error(addr) => format!("INT-GSM (Addr {}): No GPRS SIM1 connection to monitoring station 1", addr),
+            Self::GsmGprsSim1Station2Error(addr) => format!("INT-GSM (Addr {}): No GPRS SIM1 connection to monitoring station 2", addr),
+            Self::GsmGprsSim2Station1Error(addr) => format!("INT-GSM (Addr {}): No GPRS SIM2 connection to monitoring station 1", addr),
+            Self::GsmGprsSim2Station2Error(addr) => format!("INT-GSM (Addr {}): No GPRS SIM2 connection to monitoring station 2", addr),
+            Self::GsmSmsSim1Station1Error(addr) => format!("INT-GSM (Addr {}): No SMS SIM1 connection to monitoring station 1", addr),
+            Self::GsmSmsSim1Station2Error(addr) => format!("INT-GSM (Addr {}): No SMS SIM1 connection to monitoring station 2", addr),
+            Self::GsmSmsSim2Station1Error(addr) => format!("INT-GSM (Addr {}): No SMS SIM2 connection to monitoring station 1", addr),
+            Self::GsmSmsSim2Station2Error(addr) => format!("INT-GSM (Addr {}): No SMS SIM2 connection to monitoring station 2", addr),
+            
             Self::GsmSimPinError { module, sim } => format!("INT-GSM (Addr {}): SIM{} Wrong PIN", module, sim),
             Self::GsmSimLoggingError { module, sim } => format!("INT-GSM (Addr {}): SIM{} Network Registration Error", module, sim),
             Self::GsmSimCreditLow { module, sim } => format!("INT-GSM (Addr {}): SIM{} Account Credit Low", module, sim),
             Self::GsmSimSmsError { module, sim } => format!("INT-GSM (Addr {}): SIM{} SMS Sending Error", module, sim),
+            Self::GsmJamming(addr) => format!("INT-GSM (Addr {}): Cellular Jamming Detected", addr),
             Self::GsmSettingsCrcError(addr) => format!("INT-GSM (Addr {}): Settings CRC Checksum Error", addr),
             Self::GsmModuleMissing(addr) => format!("INT-GSM (Addr {}): Module Missing", addr),
             Self::GsmModuleChanged(addr) => format!("INT-GSM (Addr {}): Module Changed", addr),
             Self::GsmServerConnError(addr) => format!("INT-GSM (Addr {}): Server Connection Error", addr),
             Self::GsmMailServerConnError(addr) => format!("INT-GSM (Addr {}): Mail Server Error", addr),
             Self::GsmNtpServerConnError(addr) => format!("INT-GSM (Addr {}): NTP Server Error", addr),
-            Self::GsmCmeError { module, sim, code } => format!("INT-GSM (Addr {}): SIM{} Modem CME Error #{:04X}", module, sim, code),
-            Self::GsmTrouble { module_address, desc } => format!("INT-GSM (Addr {}): {}", module_address, desc),
 
             Self::WirelessDeviceLowBattery { zone_id } => format!("Wireless Sensor (Zone #{:03}): Low Battery", zone_id),
             Self::WirelessDeviceNoComm { zone_id } => format!("Wireless Sensor (Zone #{:03}): No Radio Communication", zone_id),
             Self::WirelessOutputNoComm { output_id } => format!("Wireless Output #{:03}: No Radio Communication", output_id),
-            Self::AcuModuleJamLevel(acu) => format!("ACU-100/220 Module #{:02}: Radio Jamming Detected", acu),
 
             Self::MasterKeyFobLowBattery(master) => format!("Master User #{:02} Key Fob: Low Battery", master),
             Self::UserKeyFobLowBattery { user_id } => format!("User #{:03} Key Fob: Low Battery", user_id),
+
+            Self::ZoneLongViolationTrouble(zone_id) => format!("Zone #{:03}: Long Violation", zone_id),
+            Self::ZoneNoViolationTrouble(zone_id) => format!("Zone #{:03}: No Violation", zone_id),
+            Self::ZoneTamperTrouble(zone_id) => format!("Zone #{:03}: Tamper", zone_id),
+            
+            Self::ExpanderRestart(exp) => format!("Expander #{:02}: Restart Latched", exp),
 
             Self::AuxiliaryStmTroubles => "Auxiliary Microprocessor (STM) Trouble".to_string(),
             Self::GenericTrouble { part, bit } => format!("Diagnostic Trouble (Part {}, Bit #{:03})", part + 1, bit),
@@ -863,8 +947,9 @@ pub struct SatelState {
     pub outputs: Vec<Output>,
     pub partitions: Vec<Partition>,
     pub system_status: Option<SystemStatus>,
-    pub troubles: [Vec<bool>; 8],
-    pub troubles_memory: [Vec<bool>; 8],
+    pub trouble_flags: std::collections::HashMap<(TroubleType, bool), bool>,
+    pub acu_jam_levels: std::collections::HashMap<u8, u8>,
+    pub cme_errors: std::collections::HashMap<(CmeSource, u8, bool), u16>,
     pub auto_read_report: Option<AutoReadReport>,
 }
 
@@ -897,8 +982,9 @@ impl SatelState {
             outputs,
             partitions,
             system_status: None,
-            troubles: Default::default(),
-            troubles_memory: Default::default(),
+            trouble_flags: std::collections::HashMap::new(),
+            acu_jam_levels: std::collections::HashMap::new(),
+            cme_errors: std::collections::HashMap::new(),
             auto_read_report: None,
         }
     }

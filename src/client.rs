@@ -4,25 +4,30 @@ use crate::config::Config;
 use crate::error::SatelError;
 use crate::event::{SatelEvent, SyncCategory};
 use crate::parsers::{
-    process_ethm_version, process_integra_version, process_output_name,
-    process_outputs_state, process_partition_name, process_partitions_alarm,
-    process_partitions_alarm_memory, process_partitions_armed_really,
-    process_partitions_armed_suppressed, process_partitions_entry_time,
-    process_partitions_exit_time_gt_10s, process_partitions_exit_time_lt_10s,
-    process_rtc_and_status, process_troubles, process_troubles_frame, process_troubles_part1,
-    process_troubles_part2, process_troubles_part3, process_troubles_part4, process_troubles_part5,
-    process_troubles_part6, process_troubles_part7, process_troubles_part8, process_zone_name,
-    process_zone_temperature, process_zones_alarm, process_zones_alarm_memory,
-    process_zones_bypass, process_zones_long_violation_trouble, process_zones_no_violation_trouble,
-    process_zones_tamper, process_zones_tamper_alarm, process_zones_tamper_alarm_memory,
-    process_zones_violation,
+    process_ethm_version, process_integra_version,
+    process_output_name, process_outputs_state, process_partition_name,
+    process_partitions_alarm, process_partitions_alarm_memory,
+    process_partitions_armed_really, process_partitions_armed_suppressed,
+    process_partitions_entry_time, process_partitions_exit_time_gt_10s,
+    process_partitions_exit_time_lt_10s, process_rtc_and_status,
+    process_troubles_frame, process_troubles_memory_part2,
+    process_troubles_memory_part3, process_troubles_memory_part5,
+    process_troubles_memory_part7, process_troubles_part1,
+    process_troubles_part2, process_troubles_part3, process_troubles_part4,
+    process_troubles_part5, process_troubles_part6, process_troubles_part7,
+    process_troubles_part8, process_zone_name, process_zone_temperature,
+    process_zones_alarm, process_zones_alarm_memory, process_zones_bypass,
+    process_zones_long_violation_trouble, process_zones_no_violation_trouble,
+    process_zones_tamper, process_zones_tamper_alarm,
+    process_zones_tamper_alarm_memory, process_zones_violation,
 };
 use crate::polling_worker::{SatelPollingWorker, TemperaturePollingTask};
 use crate::state::{
     AutoReadReport, EthmVersion, IntegraVersion, OutputName, PartitionName, SatelState, SatelStateHandle,
     SystemStatus, TemperatureSensorStatus, TroublesData, TroublesPart1Data, TroublesPart2Data,
     TroublesPart3Data, TroublesPart4Data, TroublesPart5Data, TroublesPart6Data, TroublesPart7Data,
-    TroublesPart8Data, ZoneName, ZoneStatus, ZoneTemperature,
+    TroublesPart8Data, TroublesMemoryPart2Data, TroublesMemoryPart3Data, TroublesMemoryPart5Data,
+    TroublesMemoryPart7Data, ZoneName, ZoneStatus, ZoneTemperature,
 };
 use crate::worker::{InternalMessage, SatelCommunicationWorker};
 use chrono::Local;
@@ -1105,8 +1110,7 @@ impl SatelIntegra {
         tracing::info!("Querying system hardware troubles: {:02X?}", cmd);
         let response = self.exchange(vec![cmd.to_byte()], None, None).await?;
         let parsed = process_troubles_frame(&response)?;
-        let states = process_troubles(&response)?;
-        self.update_troubles_internal(cmd, states)?;
+        self.update_troubles_internal(cmd, &response[1..])?;
         Ok(parsed)
     }
 
@@ -1114,8 +1118,7 @@ impl SatelIntegra {
     pub async fn get_troubles_part1(&self) -> Result<TroublesPart1Data, SatelError> {
         let response = self.exchange(vec![SatelCommand::TroublesPart1.to_byte()], None, None).await?;
         let parsed = process_troubles_part1(&response)?;
-        let states = process_troubles(&response)?;
-        self.update_troubles_internal(SatelCommand::TroublesPart1, states)?;
+        self.update_troubles_internal(SatelCommand::TroublesPart1, &response[1..])?;
         Ok(parsed)
     }
 
@@ -1123,8 +1126,7 @@ impl SatelIntegra {
     pub async fn get_troubles_memory_part1(&self) -> Result<TroublesPart1Data, SatelError> {
         let response = self.exchange(vec![SatelCommand::TroublesMemoryPart1.to_byte()], None, None).await?;
         let parsed = process_troubles_part1(&response)?;
-        let states = process_troubles(&response)?;
-        self.update_troubles_internal(SatelCommand::TroublesMemoryPart1, states)?;
+        self.update_troubles_internal(SatelCommand::TroublesMemoryPart1, &response[1..])?;
         Ok(parsed)
     }
 
@@ -1132,17 +1134,15 @@ impl SatelIntegra {
     pub async fn get_troubles_part2(&self) -> Result<TroublesPart2Data, SatelError> {
         let response = self.exchange(vec![SatelCommand::TroublesPart2.to_byte()], None, None).await?;
         let parsed = process_troubles_part2(&response)?;
-        let states = process_troubles(&response)?;
-        self.update_troubles_internal(SatelCommand::TroublesPart2, states)?;
+        self.update_troubles_internal(SatelCommand::TroublesPart2, &response[1..])?;
         Ok(parsed)
     }
 
     /// Queries Troubles Memory Part 2 (0x21).
-    pub async fn get_troubles_memory_part2(&self) -> Result<TroublesPart2Data, SatelError> {
+    pub async fn get_troubles_memory_part2(&self) -> Result<TroublesMemoryPart2Data, SatelError> {
         let response = self.exchange(vec![SatelCommand::TroublesMemoryPart2.to_byte()], None, None).await?;
-        let parsed = process_troubles_part2(&response)?;
-        let states = process_troubles(&response)?;
-        self.update_troubles_internal(SatelCommand::TroublesMemoryPart2, states)?;
+        let parsed = process_troubles_memory_part2(&response)?;
+        self.update_troubles_internal(SatelCommand::TroublesMemoryPart2, &response[1..])?;
         Ok(parsed)
     }
 
@@ -1150,17 +1150,15 @@ impl SatelIntegra {
     pub async fn get_troubles_part3(&self) -> Result<TroublesPart3Data, SatelError> {
         let response = self.exchange(vec![SatelCommand::TroublesPart3.to_byte()], None, None).await?;
         let parsed = process_troubles_part3(&response)?;
-        let states = process_troubles(&response)?;
-        self.update_troubles_internal(SatelCommand::TroublesPart3, states)?;
+        self.update_troubles_internal(SatelCommand::TroublesPart3, &response[1..])?;
         Ok(parsed)
     }
 
     /// Queries Troubles Memory Part 3 (0x22).
-    pub async fn get_troubles_memory_part3(&self) -> Result<TroublesPart3Data, SatelError> {
+    pub async fn get_troubles_memory_part3(&self) -> Result<TroublesMemoryPart3Data, SatelError> {
         let response = self.exchange(vec![SatelCommand::TroublesMemoryPart3.to_byte()], None, None).await?;
-        let parsed = process_troubles_part3(&response)?;
-        let states = process_troubles(&response)?;
-        self.update_troubles_internal(SatelCommand::TroublesMemoryPart3, states)?;
+        let parsed = process_troubles_memory_part3(&response)?;
+        self.update_troubles_internal(SatelCommand::TroublesMemoryPart3, &response[1..])?;
         Ok(parsed)
     }
 
@@ -1168,8 +1166,7 @@ impl SatelIntegra {
     pub async fn get_troubles_part4(&self) -> Result<TroublesPart4Data, SatelError> {
         let response = self.exchange(vec![SatelCommand::TroublesPart4.to_byte()], None, None).await?;
         let parsed = process_troubles_part4(&response)?;
-        let states = process_troubles(&response)?;
-        self.update_troubles_internal(SatelCommand::TroublesPart4, states)?;
+        self.update_troubles_internal(SatelCommand::TroublesPart4, &response[1..])?;
         Ok(parsed)
     }
 
@@ -1177,8 +1174,7 @@ impl SatelIntegra {
     pub async fn get_troubles_memory_part4(&self) -> Result<TroublesPart4Data, SatelError> {
         let response = self.exchange(vec![SatelCommand::TroublesMemoryPart4.to_byte()], None, None).await?;
         let parsed = process_troubles_part4(&response)?;
-        let states = process_troubles(&response)?;
-        self.update_troubles_internal(SatelCommand::TroublesMemoryPart4, states)?;
+        self.update_troubles_internal(SatelCommand::TroublesMemoryPart4, &response[1..])?;
         Ok(parsed)
     }
 
@@ -1186,17 +1182,15 @@ impl SatelIntegra {
     pub async fn get_troubles_part5(&self) -> Result<TroublesPart5Data, SatelError> {
         let response = self.exchange(vec![SatelCommand::TroublesPart5.to_byte()], None, None).await?;
         let parsed = process_troubles_part5(&response)?;
-        let states = process_troubles(&response)?;
-        self.update_troubles_internal(SatelCommand::TroublesPart5, states)?;
+        self.update_troubles_internal(SatelCommand::TroublesPart5, &response[1..])?;
         Ok(parsed)
     }
 
     /// Queries Troubles Memory Part 5 (0x24).
-    pub async fn get_troubles_memory_part5(&self) -> Result<TroublesPart5Data, SatelError> {
+    pub async fn get_troubles_memory_part5(&self) -> Result<TroublesMemoryPart5Data, SatelError> {
         let response = self.exchange(vec![SatelCommand::TroublesMemoryPart5.to_byte()], None, None).await?;
-        let parsed = process_troubles_part5(&response)?;
-        let states = process_troubles(&response)?;
-        self.update_troubles_internal(SatelCommand::TroublesMemoryPart5, states)?;
+        let parsed = process_troubles_memory_part5(&response)?;
+        self.update_troubles_internal(SatelCommand::TroublesMemoryPart5, &response[1..])?;
         Ok(parsed)
     }
 
@@ -1204,8 +1198,7 @@ impl SatelIntegra {
     pub async fn get_troubles_part6(&self) -> Result<TroublesPart6Data, SatelError> {
         let response = self.exchange(vec![SatelCommand::TroublesPart6.to_byte()], None, None).await?;
         let parsed = process_troubles_part6(&response)?;
-        let states = process_troubles(&response)?;
-        self.update_troubles_internal(SatelCommand::TroublesPart6, states)?;
+        self.update_troubles_internal(SatelCommand::TroublesPart6, &response[1..])?;
         Ok(parsed)
     }
 
@@ -1213,8 +1206,7 @@ impl SatelIntegra {
     pub async fn get_troubles_memory_part6(&self) -> Result<TroublesPart6Data, SatelError> {
         let response = self.exchange(vec![SatelCommand::TroublesMemoryPart6.to_byte()], None, None).await?;
         let parsed = process_troubles_part6(&response)?;
-        let states = process_troubles(&response)?;
-        self.update_troubles_internal(SatelCommand::TroublesMemoryPart6, states)?;
+        self.update_troubles_internal(SatelCommand::TroublesMemoryPart6, &response[1..])?;
         Ok(parsed)
     }
 
@@ -1222,17 +1214,15 @@ impl SatelIntegra {
     pub async fn get_troubles_part7(&self) -> Result<TroublesPart7Data, SatelError> {
         let response = self.exchange(vec![SatelCommand::TroublesPart7.to_byte()], None, None).await?;
         let parsed = process_troubles_part7(&response)?;
-        let states = process_troubles(&response)?;
-        self.update_troubles_internal(SatelCommand::TroublesPart7, states)?;
+        self.update_troubles_internal(SatelCommand::TroublesPart7, &response[1..])?;
         Ok(parsed)
     }
 
     /// Queries Troubles Memory Part 7 (0x2F).
-    pub async fn get_troubles_memory_part7(&self) -> Result<TroublesPart7Data, SatelError> {
+    pub async fn get_troubles_memory_part7(&self) -> Result<TroublesMemoryPart7Data, SatelError> {
         let response = self.exchange(vec![SatelCommand::TroublesMemoryPart7.to_byte()], None, None).await?;
-        let parsed = process_troubles_part7(&response)?;
-        let states = process_troubles(&response)?;
-        self.update_troubles_internal(SatelCommand::TroublesMemoryPart7, states)?;
+        let parsed = process_troubles_memory_part7(&response)?;
+        self.update_troubles_internal(SatelCommand::TroublesMemoryPart7, &response[1..])?;
         Ok(parsed)
     }
 
@@ -1240,8 +1230,7 @@ impl SatelIntegra {
     pub async fn get_troubles_part8(&self) -> Result<TroublesPart8Data, SatelError> {
         let response = self.exchange(vec![SatelCommand::TroublesPart8.to_byte()], None, None).await?;
         let parsed = process_troubles_part8(&response)?;
-        let states = process_troubles(&response)?;
-        self.update_troubles_internal(SatelCommand::TroublesPart8, states)?;
+        self.update_troubles_internal(SatelCommand::TroublesPart8, &response[1..])?;
         Ok(parsed)
     }
 
@@ -1249,8 +1238,7 @@ impl SatelIntegra {
     pub async fn get_troubles_memory_part8(&self) -> Result<TroublesPart8Data, SatelError> {
         let response = self.exchange(vec![SatelCommand::TroublesMemoryPart8.to_byte()], None, None).await?;
         let parsed = process_troubles_part8(&response)?;
-        let states = process_troubles(&response)?;
-        self.update_troubles_internal(SatelCommand::TroublesMemoryPart8, states)?;
+        self.update_troubles_internal(SatelCommand::TroublesMemoryPart8, &response[1..])?;
         Ok(parsed)
     }
 

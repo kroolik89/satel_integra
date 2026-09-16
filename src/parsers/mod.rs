@@ -12,10 +12,12 @@ pub use partitions::{
     process_partitions_exit_time_gt_10s, process_partitions_exit_time_lt_10s,
 };
 pub use system::{
-    map_trouble_bit, map_trouble_part_bit, process_auto_read_response, process_ethm_version,
-    process_integra_version, process_rtc_and_status, process_troubles, process_troubles_frame,
+    decode_troubles, process_auto_read_response, process_ethm_version,
+    process_integra_version, process_rtc_and_status, process_troubles_frame,
     process_troubles_part1, process_troubles_part2, process_troubles_part3, process_troubles_part4,
     process_troubles_part5, process_troubles_part6, process_troubles_part7, process_troubles_part8,
+    process_troubles_memory_part2, process_troubles_memory_part3, process_troubles_memory_part5,
+    process_troubles_memory_part7, TroubleItem,
 };
 pub use zones::{
     process_zone_temperature, process_zones_alarm, process_zones_alarm_memory,

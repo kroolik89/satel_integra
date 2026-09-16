@@ -34,6 +34,7 @@ pub struct TroubleDescriptor {
     pub addressing: TroubleAddressing,
     pub domain: Option<TroubleDomain>,
     pub has_memory: bool,
+    pub has_state: bool,
 }
 
 macro_rules! desc {
@@ -44,9 +45,24 @@ macro_rules! desc {
             addressing: $addr,
             domain: $domain,
             has_memory: true,
+            has_state: true,
         }
     };
 }
+
+macro_rules! desc_custom {
+    ($key:expr, $label:expr, $addr:expr, $domain:expr, $state:expr, $memory:expr) => {
+        TroubleDescriptor {
+            key: $key,
+            label_en: $label,
+            addressing: $addr,
+            domain: $domain,
+            has_state: $state,
+            has_memory: $memory,
+        }
+    };
+}
+
 
 impl TroubleType {
     pub fn catalog() -> &'static [TroubleDescriptor] {
@@ -87,7 +103,7 @@ impl TroubleType {
             desc!("expander_tamper", "Expander: Tamper / Sabotage", TroubleAddressing::Range { from: 1, to: 64 }, None),
             desc!("expander_card_reader_head_a", "Expander: Card Reader Head A / Synchro Trouble", TroubleAddressing::Range { from: 1, to: 64 }, None),
             desc!("expander_card_reader_head_b", "Expander: Card Reader Head B / Charging Trouble", TroubleAddressing::Range { from: 1, to: 64 }, None),
-            desc!("expander_acu_jammed_or_short_circuit", "Expander: Jammed / Addressable Loop Short Circuit", TroubleAddressing::Range { from: 1, to: 16 }, None),
+            desc!("expander_acu_jammed_or_short_circuit", "Expander: Jammed / Addressable Loop Short Circuit", TroubleAddressing::Range { from: 1, to: 30 }, None),
 
             // --- Keypads ---
             desc!("keypad_no_comm", "Keypad: No Communication", TroubleAddressing::Range { from: 1, to: 8 }, None),
@@ -97,9 +113,27 @@ impl TroubleType {
 
             // --- Communication modules ---
             desc!("ethm_no_lan_cable", "ETHM-1: Ethernet LAN Cable Unplugged", TroubleAddressing::Range { from: 1, to: 8 }, None),
-            desc!("ethm_ping_trouble", "ETHM-1: Ping Network Test Failed", TroubleAddressing::Single, None),
-            desc!("ethm_server_id_error", "ETHM-1: SATEL Server MAC/ID Verification Error", TroubleAddressing::Single, None),
-            desc!("ethm_satel_server_connection_error", "ETHM-1: No Connection to SATEL Server", TroubleAddressing::Single, None),
+            
+            desc!("gsm_ethm_station_1_error", "INT-GSM/ETHM-1: Station 1 Transmission Error", TroubleAddressing::Range { from: 0, to: 7 }, None),
+            desc!("gsm_ethm_station_2_error", "INT-GSM/ETHM-1: Station 2 Transmission Error", TroubleAddressing::Range { from: 0, to: 7 }, None),
+            desc!("gsm_gprs_sim1_station_1_error", "INT-GSM: GPRS SIM 1 Station 1 Error", TroubleAddressing::Range { from: 0, to: 7 }, None),
+            desc!("gsm_gprs_sim1_station_2_error", "INT-GSM: GPRS SIM 1 Station 2 Error", TroubleAddressing::Range { from: 0, to: 7 }, None),
+            desc!("gsm_gprs_sim2_station_1_error", "INT-GSM: GPRS SIM 2 Station 1 Error", TroubleAddressing::Range { from: 0, to: 7 }, None),
+            desc!("gsm_gprs_sim2_station_2_error", "INT-GSM: GPRS SIM 2 Station 2 Error", TroubleAddressing::Range { from: 0, to: 7 }, None),
+            desc!("gsm_sms_sim1_station_1_error", "INT-GSM: SMS SIM 1 Station 1 Error", TroubleAddressing::Range { from: 0, to: 7 }, None),
+            desc!("gsm_sms_sim1_station_2_error", "INT-GSM: SMS SIM 1 Station 2 Error", TroubleAddressing::Range { from: 0, to: 7 }, None),
+            desc!("gsm_sms_sim2_station_1_error", "INT-GSM: SMS SIM 2 Station 1 Error", TroubleAddressing::Range { from: 0, to: 7 }, None),
+            desc!("gsm_sms_sim2_station_2_error", "INT-GSM: SMS SIM 2 Station 2 Error", TroubleAddressing::Range { from: 0, to: 7 }, None),
+            
+            desc_custom!("zone_long_violation_trouble", "Zone: Long Violation", TroubleAddressing::Range { from: 1, to: 256 }, Some(TroubleDomain::Zone), false, true),
+            desc_custom!("zone_no_violation_trouble", "Zone: No Violation", TroubleAddressing::Range { from: 1, to: 256 }, Some(TroubleDomain::Zone), false, true),
+            desc_custom!("zone_tamper_trouble", "Zone: Tamper", TroubleAddressing::Range { from: 1, to: 256 }, Some(TroubleDomain::Zone), false, true),
+            desc_custom!("expander_restart", "Expander: Restart", TroubleAddressing::Range { from: 1, to: 64 }, None, false, true),
+            desc_custom!("keypad_restart", "Keypad: Restart", TroubleAddressing::Range { from: 1, to: 8 }, None, false, true),
+
+            desc!("ethm_ping_trouble", "ETHM-1: Ping Network Test Failed", TroubleAddressing::Range { from: 1, to: 8 }, None),
+            desc!("ethm_server_id_error", "ETHM-1: SATEL Server MAC/ID Verification Error", TroubleAddressing::Range { from: 1, to: 8 }, None),
+            desc!("ethm_satel_server_connection_error", "ETHM-1: No Connection to SATEL Server", TroubleAddressing::Range { from: 1, to: 8 }, None),
             desc!("ethm_monitoring_station1_error", "ETHM-1: Monitoring Station 1 Connection Error", TroubleAddressing::Single, None),
             desc!("ethm_monitoring_station2_error", "ETHM-1: Monitoring Station 2 Connection Error", TroubleAddressing::Single, None),
             desc!("gprs_monitoring_station1_error", "INT-GSM: GPRS Monitoring Station 1 Error", TroubleAddressing::Single, None),
@@ -108,8 +142,7 @@ impl TroubleType {
             desc!("ip_monitoring_station2_trouble", "IP Monitoring: Station 2 Communication Trouble", TroubleAddressing::Single, None),
             desc!("time_server_trouble", "Network: NTP Time Synchronization Server Error", TroubleAddressing::Single, None),
             desc!("gsm_init_error", "INT-GSM: Module Initialization Error", TroubleAddressing::Single, None),
-            desc!("int_gsm_signal_loss", "INT-GSM: Cellular Signal Lost", TroubleAddressing::Single, None),
-            desc!("gsm_jamming", "INT-GSM: Cellular Jamming Detected", TroubleAddressing::Range { from: 0, to: 7 }, None),
+                        desc!("gsm_jamming", "INT-GSM: Cellular Jamming Detected", TroubleAddressing::Range { from: 0, to: 7 }, None),
             desc!("gsm_sim_pin_error", "INT-GSM: SIM Wrong PIN", TroubleAddressing::Pair { a_from: 0, a_to: 7, b_from: 1, b_to: 2 }, None),
             desc!("gsm_sim_logging_error", "INT-GSM: SIM Network Registration Error", TroubleAddressing::Pair { a_from: 0, a_to: 7, b_from: 1, b_to: 2 }, None),
             desc!("gsm_sim_credit_low", "INT-GSM: SIM Account Credit Low", TroubleAddressing::Pair { a_from: 0, a_to: 7, b_from: 1, b_to: 2 }, None),
@@ -125,11 +158,10 @@ impl TroubleType {
             desc!("wireless_device_low_battery", "Wireless Sensor: Low Battery", TroubleAddressing::Range { from: 1, to: 240 }, Some(TroubleDomain::Zone)),
             desc!("wireless_device_no_comm", "Wireless Sensor: No Radio Communication", TroubleAddressing::Range { from: 1, to: 240 }, Some(TroubleDomain::Zone)),
             desc!("wireless_output_no_comm", "Wireless Output: No Radio Communication", TroubleAddressing::Range { from: 1, to: 240 }, Some(TroubleDomain::Output)),
-            desc!("acu_module_jam_level", "ACU-100/220 Module: Radio Jamming Detected", TroubleAddressing::Range { from: 1, to: 30 }, None),
-
+            
             // --- Key fobs ---
-            desc!("master_key_fob_low_battery", "Master User Key Fob: Low Battery", TroubleAddressing::Range { from: 1, to: 8 }, None),
-            desc!("user_key_fob_low_battery", "User Key Fob: Low Battery", TroubleAddressing::Range { from: 1, to: 240 }, None),
+            desc_custom!("master_key_fob_low_battery", "Master User Key Fob: Low Battery", TroubleAddressing::Range { from: 1, to: 8 }, None, true, false),
+            desc_custom!("user_key_fob_low_battery", "User Key Fob: Low Battery", TroubleAddressing::Range { from: 1, to: 240 }, None, true, false),
 
             // --- Other ---
             desc!("auxiliary_stm_troubles", "Auxiliary Microprocessor (STM) Trouble", TroubleAddressing::Single, None),
@@ -175,9 +207,9 @@ impl TroubleType {
             Self::KeypadTamper(_) => Some("keypad_tamper"),
             Self::KeypadInitError(_) => Some("keypad_init_error"),
             Self::EthmNoLanCable(_) => Some("ethm_no_lan_cable"),
-            Self::EthmPingTrouble => Some("ethm_ping_trouble"),
-            Self::EthmServerIdError => Some("ethm_server_id_error"),
-            Self::EthmSatelServerConnectionError => Some("ethm_satel_server_connection_error"),
+            Self::EthmPingTrouble(_) => Some("ethm_ping_trouble"),
+            Self::EthmServerIdError(_) => Some("ethm_server_id_error"),
+            Self::EthmSatelServerConnectionError(_) => Some("ethm_satel_server_connection_error"),
             Self::EthmMonitoringStation1Error => Some("ethm_monitoring_station1_error"),
             Self::EthmMonitoringStation2Error => Some("ethm_monitoring_station2_error"),
             Self::GprsMonitoringStation1Error => Some("gprs_monitoring_station1_error"),
@@ -186,7 +218,6 @@ impl TroubleType {
             Self::IpMonitoringStation2Trouble => Some("ip_monitoring_station2_trouble"),
             Self::TimeServerTrouble => Some("time_server_trouble"),
             Self::GsmInitError => Some("gsm_init_error"),
-            Self::IntGsmSignalLoss => Some("int_gsm_signal_loss"),
             Self::GsmJamming(_) => Some("gsm_jamming"),
             Self::GsmSimPinError { .. } => Some("gsm_sim_pin_error"),
             Self::GsmSimLoggingError { .. } => Some("gsm_sim_logging_error"),
@@ -201,13 +232,26 @@ impl TroubleType {
             Self::WirelessDeviceLowBattery { .. } => Some("wireless_device_low_battery"),
             Self::WirelessDeviceNoComm { .. } => Some("wireless_device_no_comm"),
             Self::WirelessOutputNoComm { .. } => Some("wireless_output_no_comm"),
-            Self::AcuModuleJamLevel(_) => Some("acu_module_jam_level"),
             Self::MasterKeyFobLowBattery(_) => Some("master_key_fob_low_battery"),
             Self::UserKeyFobLowBattery { .. } => Some("user_key_fob_low_battery"),
+
+            Self::GsmEthmStation1Error(_) => Some("gsm_ethm_station_1_error"),
+            Self::GsmEthmStation2Error(_) => Some("gsm_ethm_station_2_error"),
+            Self::GsmGprsSim1Station1Error(_) => Some("gsm_gprs_sim1_station_1_error"),
+            Self::GsmGprsSim1Station2Error(_) => Some("gsm_gprs_sim1_station_2_error"),
+            Self::GsmGprsSim2Station1Error(_) => Some("gsm_gprs_sim2_station_1_error"),
+            Self::GsmGprsSim2Station2Error(_) => Some("gsm_gprs_sim2_station_2_error"),
+            Self::GsmSmsSim1Station1Error(_) => Some("gsm_sms_sim1_station_1_error"),
+            Self::GsmSmsSim1Station2Error(_) => Some("gsm_sms_sim1_station_2_error"),
+            Self::GsmSmsSim2Station1Error(_) => Some("gsm_sms_sim2_station_1_error"),
+            Self::GsmSmsSim2Station2Error(_) => Some("gsm_sms_sim2_station_2_error"),
+            Self::ZoneLongViolationTrouble(_) => Some("zone_long_violation_trouble"),
+            Self::ZoneNoViolationTrouble(_) => Some("zone_no_violation_trouble"),
+            Self::ZoneTamperTrouble(_) => Some("zone_tamper_trouble"),
+            Self::ExpanderRestart(_) => Some("expander_restart"),
+            Self::KeypadRestart(_) => Some("keypad_restart"),
             Self::AuxiliaryStmTroubles => Some("auxiliary_stm_troubles"),
             Self::GenericTrouble { .. } => None,
-            Self::GsmTrouble { .. } => None,
-            Self::GsmCmeError { .. } => None,
         }
     }
 
@@ -250,9 +294,9 @@ impl TroubleType {
             Self::KeypadTamper(id) => Some(TroubleAddress::One(*id as u16)),
             Self::KeypadInitError(id) => Some(TroubleAddress::One(*id as u16)),
             Self::EthmNoLanCable(id) => Some(TroubleAddress::One(*id as u16)),
-            Self::EthmPingTrouble => Some(TroubleAddress::One(1)),
-            Self::EthmServerIdError => Some(TroubleAddress::One(1)),
-            Self::EthmSatelServerConnectionError => Some(TroubleAddress::One(1)),
+            Self::EthmPingTrouble(_) => Some(TroubleAddress::One(1)),
+            Self::EthmServerIdError(_) => Some(TroubleAddress::One(1)),
+            Self::EthmSatelServerConnectionError(_) => Some(TroubleAddress::One(1)),
             Self::EthmMonitoringStation1Error => Some(TroubleAddress::One(1)),
             Self::EthmMonitoringStation2Error => Some(TroubleAddress::One(1)),
             Self::GprsMonitoringStation1Error => Some(TroubleAddress::One(1)),
@@ -261,7 +305,6 @@ impl TroubleType {
             Self::IpMonitoringStation2Trouble => Some(TroubleAddress::One(1)),
             Self::TimeServerTrouble => Some(TroubleAddress::One(1)),
             Self::GsmInitError => Some(TroubleAddress::One(1)),
-            Self::IntGsmSignalLoss => Some(TroubleAddress::One(1)),
             Self::GsmJamming(id) => Some(TroubleAddress::One(*id as u16)),
             Self::GsmSimPinError { module, sim } => Some(TroubleAddress::Pair(*module as u16, *sim as u16)),
             Self::GsmSimLoggingError { module, sim } => Some(TroubleAddress::Pair(*module as u16, *sim as u16)),
@@ -276,13 +319,25 @@ impl TroubleType {
             Self::WirelessDeviceLowBattery { zone_id } => Some(TroubleAddress::One(*zone_id)),
             Self::WirelessDeviceNoComm { zone_id } => Some(TroubleAddress::One(*zone_id)),
             Self::WirelessOutputNoComm { output_id } => Some(TroubleAddress::One(*output_id)),
-            Self::AcuModuleJamLevel(id) => Some(TroubleAddress::One(*id as u16)),
             Self::MasterKeyFobLowBattery(id) => Some(TroubleAddress::One(*id as u16)),
             Self::UserKeyFobLowBattery { user_id } => Some(TroubleAddress::One(*user_id)),
+
+            Self::GsmEthmStation1Error(id) | Self::GsmEthmStation2Error(id) 
+            | Self::GsmGprsSim1Station1Error(id) | Self::GsmGprsSim1Station2Error(id)
+            | Self::GsmGprsSim2Station1Error(id) | Self::GsmGprsSim2Station2Error(id)
+            | Self::GsmSmsSim1Station1Error(id) | Self::GsmSmsSim1Station2Error(id)
+            | Self::GsmSmsSim2Station1Error(id) | Self::GsmSmsSim2Station2Error(id) 
+            => Some(TroubleAddress::One(*id as u16)),
+            
+            Self::ZoneLongViolationTrouble(id) 
+            | Self::ZoneNoViolationTrouble(id) 
+            | Self::ZoneTamperTrouble(id) 
+            => Some(TroubleAddress::One(*id)),
+            
+            Self::ExpanderRestart(id) => Some(TroubleAddress::One(*id as u16)),
+            Self::KeypadRestart(id) => Some(TroubleAddress::One(*id as u16)),
             Self::AuxiliaryStmTroubles => Some(TroubleAddress::One(1)),
             Self::GenericTrouble { .. } => None,
-            Self::GsmTrouble { .. } => None,
-            Self::GsmCmeError { .. } => None,
         }
     }
 }
@@ -335,9 +390,7 @@ mod tests {
                 }
             } else {
                 match t {
-                    TroubleType::GenericTrouble { .. } |
-                    TroubleType::GsmTrouble { .. } |
-                    TroubleType::GsmCmeError { .. } => {}
+                    TroubleType::GenericTrouble { .. } => {}
                     _ => panic!("Unexpected None key for {:?}", t),
                 }
             }
@@ -397,9 +450,9 @@ mod tests {
         check(TroubleType::KeypadInitError(8));
         check(TroubleType::EthmNoLanCable(1));
         check(TroubleType::EthmNoLanCable(8));
-        check(TroubleType::EthmPingTrouble);
-        check(TroubleType::EthmServerIdError);
-        check(TroubleType::EthmSatelServerConnectionError);
+        check(TroubleType::EthmPingTrouble(1));
+        check(TroubleType::EthmServerIdError(1));
+        check(TroubleType::EthmSatelServerConnectionError(1));
         check(TroubleType::EthmMonitoringStation1Error);
         check(TroubleType::EthmMonitoringStation2Error);
         check(TroubleType::GprsMonitoringStation1Error);
@@ -408,7 +461,8 @@ mod tests {
         check(TroubleType::IpMonitoringStation2Trouble);
         check(TroubleType::TimeServerTrouble);
         check(TroubleType::GsmInitError);
-        check(TroubleType::IntGsmSignalLoss);
+        check(TroubleType::GsmEthmStation1Error(1));
+        check(TroubleType::ZoneLongViolationTrouble(1));
         check(TroubleType::GsmJamming(0));
         check(TroubleType::GsmJamming(7));
         check(TroubleType::GsmSimPinError { module: 0, sim: 1 });
@@ -437,18 +491,16 @@ mod tests {
         check(TroubleType::WirelessDeviceNoComm { zone_id: 240 });
         check(TroubleType::WirelessOutputNoComm { output_id: 1 });
         check(TroubleType::WirelessOutputNoComm { output_id: 240 });
-        check(TroubleType::AcuModuleJamLevel(1));
-        check(TroubleType::AcuModuleJamLevel(30));
-        check(TroubleType::MasterKeyFobLowBattery(1));
+                        check(TroubleType::MasterKeyFobLowBattery(1));
         check(TroubleType::MasterKeyFobLowBattery(8));
         check(TroubleType::UserKeyFobLowBattery { user_id: 1 });
         check(TroubleType::UserKeyFobLowBattery { user_id: 240 });
         check(TroubleType::AuxiliaryStmTroubles);
         check(TroubleType::GenericTrouble { part: 0, bit: 0 });
-        check(TroubleType::GsmTrouble { module_address: 0, desc: "" });
-        check(TroubleType::GsmCmeError { module: 0, sim: 1, code: 0 });
+        check(TroubleType::ExpanderRestart(1));
+        check(TroubleType::KeypadRestart(1));
 
-        let variant_count = 70;
+        let variant_count = 83;
         let expected_desc_count = variant_count - 3;
         assert_eq!(catalog.len(), expected_desc_count, "Expected {} descriptors, got {}", expected_desc_count, catalog.len());
     }

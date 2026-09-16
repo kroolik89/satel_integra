@@ -5,7 +5,7 @@ use crate::parsers::{
     process_outputs_state, process_partitions_alarm, process_partitions_alarm_memory,
     process_partitions_armed_really, process_partitions_armed_suppressed,
     process_partitions_entry_time, process_partitions_exit_time_gt_10s,
-    process_partitions_exit_time_lt_10s, process_rtc_and_status, process_troubles,
+    process_partitions_exit_time_lt_10s, process_rtc_and_status,
     process_zones_alarm, process_zones_alarm_memory, process_zones_bypass,
     process_zones_long_violation_trouble, process_zones_no_violation_trouble, process_zones_tamper,
     process_zones_tamper_alarm, process_zones_tamper_alarm_memory, process_zones_violation,
@@ -158,9 +158,7 @@ impl SatelAutoRequester {
             }
             0x1B..=0x1F | 0x2C | 0x2D | 0x30 | 0x20..=0x24 | 0x2E | 0x2F | 0x31 => {
                 if let Some(cmd) = SatelCommand::from_byte(frame[0]) {
-                    if let Ok(states) = process_troubles(frame) {
-                        let _ = self.integra.update_troubles_internal(cmd, states);
-                    }
+                    let _ = self.integra.update_troubles_internal(cmd, &frame[1..]);
                 }
             }
             0xEF => {

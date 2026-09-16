@@ -2,25 +2,41 @@ use crate::config::Config;
 use crate::error::SatelError;
 use crate::state::{
     AutoReadItemState, AutoReadItemStatus, AutoReadReport, EthmCapabilities, EthmVersion,
-    IntegraVersion, SystemStatus, TroubleType,
+    IntegraVersion, SystemStatus, TroubleType, CmeSource, TroublesMemoryPart2Data,
+    TroublesMemoryPart3Data, TroublesMemoryPart5Data, TroublesMemoryPart7Data,
 };
 use chrono::{Local, TimeZone};
+
+/// A single decoded trouble item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TroubleItem {
+    Flag {
+        trouble: TroubleType,
+        memory: bool,
+        active: bool,
+    },
+    AcuJamLevel {
+        module: u8,
+        level: u8,
+    },
+    CmeError {
+        source: CmeSource,
+        sim: u8,
+        memory: bool,
+        code: u16,
+    },
+}
 
 /// Parses the complete response frame for command 0x7C (ETHM/INT-RS module version).
 pub fn process_ethm_version(frame: &[u8]) -> Result<EthmVersion, SatelError> {
     if frame.is_empty() || frame[0] != 0x7C {
         return Err(SatelError::InvalidFrame);
     }
-
     let data = &frame[1..];
     if data.len() < 12 {
         return Err(SatelError::InvalidFrame);
     }
-
-    // 11 bytes: Version and build date (ASCII)
     let version_raw = String::from_utf8_lossy(&data[0..11]).trim().to_string();
-
-    // 12th byte (index 11 in 'data'): Feature capabilities bitmask
     let caps_byte = data[11];
     let capabilities = EthmCapabilities {
         support_32_byte_frames: (caps_byte & 0x01) != 0,
@@ -32,7 +48,6 @@ pub fn process_ethm_version(frame: &[u8]) -> Result<EthmVersion, SatelError> {
         reserved_bit6: (caps_byte & 0x40) != 0,
         reserved_bit7: (caps_byte & 0x80) != 0,
     };
-
     Ok(EthmVersion {
         version_raw,
         capabilities,
@@ -45,13 +60,10 @@ pub fn process_integra_version(frame: &[u8]) -> Result<IntegraVersion, SatelErro
     if frame.is_empty() || frame[0] != 0x7E {
         return Err(SatelError::InvalidFrame);
     }
-
     let data = &frame[1..];
     if data.len() < 14 {
         return Err(SatelError::InvalidFrame);
     }
-
-    // 1 byte: Panel model type
     let type_code = data[0];
     let (model, io_count, partition_count) = match type_code {
         0 => ("INTEGRA 24", 24, 4),
@@ -66,22 +78,15 @@ pub fn process_integra_version(frame: &[u8]) -> Result<IntegraVersion, SatelErro
         8 => ("INTEGRA 256 Plus", 256, 32),
         _ => ("Unknown INTEGRA", 0, 0),
     };
-
-    // 11 bytes: Firmware version and compilation date (ASCII)
     let version_raw = &data[1..12];
     let firmware_version = String::from_utf8_lossy(version_raw).trim().to_string();
-
-    // 1 byte: Language code
     let lang_code = data[12];
     let language = match lang_code {
         0 => "PL",
         1 => "EN",
         _ => "Other",
     }.to_string();
-
-    // 1 byte: Stored in FLASH (255 = Yes, other = No)
     let stored_in_flash = data[13] == 255;
-
     Ok(IntegraVersion {
         model: model.to_string(),
         firmware_version,
@@ -98,13 +103,10 @@ pub fn process_rtc_and_status(frame: &[u8]) -> Result<SystemStatus, SatelError> 
     if frame.is_empty() || frame[0] != 0x1A {
         return Err(SatelError::InvalidFrame);
     }
-
     let data = &frame[1..];
     if data.len() < 7 {
         return Err(SatelError::InvalidFrame);
     }
-
-    // Format 0x1A: [YYYY_hi, YYYY_lo, MM, DD, HH, MM, SS, Status/DayOfWeek, ...]
     let (year, month, day, hour, min, sec, status_byte) = if data.len() >= 8 {
         let y = (bcd_to_u8(data[0]) as i32 * 100) + bcd_to_u8(data[1]) as i32;
         let m = bcd_to_u8(data[2]) as u32;
@@ -124,16 +126,13 @@ pub fn process_rtc_and_status(frame: &[u8]) -> Result<SystemStatus, SatelError> 
         let status = data[6];
         (y, m, d, h, min, s, status)
     };
-
     let rtc = Local
         .with_ymd_and_hms(year, month, day, hour, min, sec)
         .single()
         .unwrap_or_else(Local::now);
-
     let service_mode = (status_byte & (1 << 7)) != 0;
     let troubles_present = (status_byte & (1 << 6)) != 0;
     let troubles_memory = (status_byte & (1 << 5)) != 0;
-
     Ok(SystemStatus {
         service_mode,
         troubles_present,
@@ -156,22 +155,351 @@ fn extract_bits(bytes: &[u8]) -> Vec<bool> {
     bits
 }
 
-/// Parses the complete response frame for trouble commands (0x1B-0x31).
-/// Returns a bit vector across all payload bytes.
-pub fn process_troubles(frame: &[u8]) -> Result<Vec<bool>, SatelError> {
-    if frame.is_empty() {
+/// Helper enum for tabular decoding
+enum FieldRule {
+    /// Bit vector field where each bit maps to `constructor(start_num + bit_index)`
+    Bitmask {
+        offset: usize,
+        length: usize,
+        start_num: u16,
+        memory: bool,
+        constructor: fn(u16) -> TroubleType,
+    },
+    /// Single byte where each bit represents a specific module 1..8
+    ModuleMask {
+        offset: usize,
+        memory: bool,
+        constructor: fn(u8) -> TroubleType,
+    },
+    /// Custom extractor returning a list of TroubleItem
+    Custom(fn(&[u8], bool) -> Vec<TroubleItem>),
+}
+
+fn bitmask(offset: usize, length: usize, start_num: u16, memory: bool, constructor: fn(u16) -> TroubleType) -> FieldRule {
+    FieldRule::Bitmask { offset, length, start_num, memory, constructor }
+}
+
+fn module_mask(offset: usize, memory: bool, constructor: fn(u8) -> TroubleType) -> FieldRule {
+    FieldRule::ModuleMask { offset, memory, constructor }
+}
+
+fn custom(extractor: fn(&[u8], bool) -> Vec<TroubleItem>) -> FieldRule {
+    FieldRule::Custom(extractor)
+}
+
+fn decode_system_troubles(data: &[u8], memory: bool) -> Vec<TroubleItem> {
+    let mut items = Vec::new();
+    if data.len() < 43 { return items; }
+    let b1 = data[40];
+    let b2 = data[41];
+    let b3 = data[42];
+    
+    let rules = vec![
+        (TroubleType::MainBoardOutOverload(1), b1 & (1<<0) != 0),
+        (TroubleType::MainBoardOutOverload(2), b1 & (1<<1) != 0),
+        (TroubleType::MainBoardOutOverload(3), b1 & (1<<2) != 0),
+        (TroubleType::MainBoardOutOverload(4), b1 & (1<<3) != 0),
+        (TroubleType::MainBoardKpdPowerOverload, b1 & (1<<4) != 0),
+        (TroubleType::MainBoardExPowerOverload, b1 & (1<<5) != 0),
+        (TroubleType::MainBoardBatteryLow, b1 & (1<<6) != 0),
+        (TroubleType::MainBoardAcLoss, b1 & (1<<7) != 0),
+        
+        (TroubleType::MainBoardDataBusDt1, b2 & (1<<0) != 0),
+        (TroubleType::MainBoardDataBusDt2, b2 & (1<<1) != 0),
+        (TroubleType::MainBoardDataBusDtm, b2 & (1<<2) != 0),
+        (TroubleType::RtcLoss, b2 & (1<<3) != 0),
+        (TroubleType::NoDtrSignal, b2 & (1<<4) != 0),
+        (TroubleType::MainBoardBatteryMissing, b2 & (1<<5) != 0),
+        (TroubleType::ExternalModemInitTrouble, b2 & (1<<6) != 0),
+        (TroubleType::ExternalModemCmdTrouble, b2 & (1<<7) != 0),
+        
+        (TroubleType::TelephoneLineNoVoltage, b3 & (1<<0) != 0),
+        (TroubleType::TelephoneLineBadSignal, b3 & (1<<1) != 0),
+        (TroubleType::TelephoneLineNoSignal, b3 & (1<<2) != 0),
+        (TroubleType::MonitoringStation1Trouble, b3 & (1<<3) != 0),
+        (TroubleType::MonitoringStation2Trouble, b3 & (1<<4) != 0),
+        (TroubleType::EepromRtcTrouble, b3 & (1<<5) != 0),
+        (TroubleType::RamMemoryError, b3 & (1<<6) != 0),
+        (TroubleType::MainPanelRestartMemory, b3 & (1<<7) != 0),
+    ];
+    for (t, active) in rules {
+        items.push(TroubleItem::Flag { trouble: t, memory, active });
+    }
+    items
+}
+
+fn decode_ethm_ptsa_status(data: &[u8], memory: bool) -> Vec<TroubleItem> {
+    let mut items = Vec::new();
+    if data.len() < 47 { return items; }
+    let p4 = data[46];
+    let rules = vec![
+        (TroubleType::EthmMonitoringStation1Error, p4 & (1<<0) != 0),
+        (TroubleType::EthmMonitoringStation2Error, p4 & (1<<1) != 0),
+        (TroubleType::GprsMonitoringStation1Error, p4 & (1<<2) != 0),
+        (TroubleType::GprsMonitoringStation2Error, p4 & (1<<3) != 0),
+        (TroubleType::TimeServerTrouble, p4 & (1<<4) != 0),
+        (TroubleType::GsmInitError, p4 & (1<<5) != 0),
+        (TroubleType::IpMonitoringStation1Trouble, p4 & (1<<6) != 0),
+        (TroubleType::IpMonitoringStation2Trouble, p4 & (1<<7) != 0),
+    ];
+    for (t, active) in rules {
+        items.push(TroubleItem::Flag { trouble: t, memory, active });
+    }
+    items
+}
+
+fn decode_aux_stm(data: &[u8], memory: bool) -> Vec<TroubleItem> {
+    let mut items = Vec::new();
+    if data.len() > 29 {
+        let active = data[29] != 0;
+        items.push(TroubleItem::Flag { trouble: TroubleType::AuxiliaryStmTroubles, memory, active });
+    }
+    items
+}
+
+fn decode_acu_jam_level(data: &[u8], _memory: bool) -> Vec<TroubleItem> {
+    let mut items = Vec::new();
+    let end = std::cmp::min(15, data.len());
+    for i in 0..end {
+        items.push(TroubleItem::AcuJamLevel { module: (i + 1) as u8, level: data[i] });
+    }
+    items
+}
+
+fn decode_acu_jam_level_16_30(data: &[u8], _memory: bool) -> Vec<TroubleItem> {
+    let mut items = Vec::new();
+    if data.len() < 47 { return items; }
+    for i in 0..15 {
+        items.push(TroubleItem::AcuJamLevel { module: (i + 16) as u8, level: data[32 + i] });
+    }
+    items
+}
+
+fn decode_gsm_block(data: &[u8], memory: bool) -> Vec<TroubleItem> {
+    let mut items = Vec::new();
+    for module in 0..8 {
+        let off = module * 8;
+        if data.len() < off + 8 { break; }
+        let b0 = data[off];
+        let b1 = data[off+1];
+        let b2 = data[off+2];
+        let b3 = data[off+3];
+        let m = module as u8;
+        
+        let mut flags = vec![
+            (TroubleType::GsmEthmStation1Error(m), b0 & (1<<0) != 0),
+            (TroubleType::GsmEthmStation2Error(m), b0 & (1<<1) != 0),
+            (TroubleType::GsmGprsSim1Station1Error(m), b0 & (1<<2) != 0),
+            (TroubleType::GsmGprsSim1Station2Error(m), b0 & (1<<3) != 0),
+            (TroubleType::GsmGprsSim2Station1Error(m), b0 & (1<<4) != 0),
+            (TroubleType::GsmGprsSim2Station2Error(m), b0 & (1<<5) != 0),
+            (TroubleType::GsmSmsSim1Station1Error(m), b0 & (1<<6) != 0),
+            (TroubleType::GsmSmsSim1Station2Error(m), b0 & (1<<7) != 0),
+            
+            (TroubleType::GsmSmsSim2Station1Error(m), b1 & (1<<0) != 0),
+            (TroubleType::GsmSmsSim2Station2Error(m), b1 & (1<<1) != 0),
+            (TroubleType::GsmSimPinError { module: m, sim: 1 }, b1 & (1<<2) != 0),
+            (TroubleType::GsmSimPinError { module: m, sim: 2 }, b1 & (1<<3) != 0),
+            (TroubleType::GsmSimLoggingError { module: m, sim: 1 }, b1 & (1<<4) != 0),
+            (TroubleType::GsmSimLoggingError { module: m, sim: 2 }, b1 & (1<<5) != 0),
+            (TroubleType::GsmSimCreditLow { module: m, sim: 1 }, b1 & (1<<6) != 0),
+            (TroubleType::GsmSimCreditLow { module: m, sim: 2 }, b1 & (1<<7) != 0),
+            
+            (TroubleType::GsmSimSmsError { module: m, sim: 1 }, b2 & (1<<0) != 0),
+            (TroubleType::GsmSimSmsError { module: m, sim: 2 }, b2 & (1<<1) != 0),
+            (TroubleType::GsmJamming(m), b2 & (1<<2) != 0),
+            (TroubleType::GsmSettingsCrcError(m), b2 & (1<<3) != 0),
+            (TroubleType::GsmModuleMissing(m), b2 & (1<<4) != 0),
+            (TroubleType::GsmModuleChanged(m), b2 & (1<<5) != 0),
+            (TroubleType::GsmServerConnError(m), b2 & (1<<6) != 0),
+            (TroubleType::GsmMailServerConnError(m), b2 & (1<<7) != 0),
+            
+            (TroubleType::GsmNtpServerConnError(m), b3 & (1<<0) != 0),
+        ];
+        
+        // generic reserved bits
+        for i in 1..8 {
+            flags.push((TroubleType::GenericTrouble { part: 7, bit: (off * 8 + 3 * 8 + i) as u16 }, b3 & (1<<i) != 0));
+        }
+
+        for (t, active) in flags {
+            // GenericTrouble only yielded if active
+            if let TroubleType::GenericTrouble { .. } = t {
+                if !active { continue; }
+            }
+            items.push(TroubleItem::Flag { trouble: t, memory, active });
+        }
+        
+        let sim1_cme = u16::from_be_bytes([data[off+4], data[off+5]]);
+        let sim2_cme = u16::from_be_bytes([data[off+6], data[off+7]]);
+        items.push(TroubleItem::CmeError { source: CmeSource::GsmModule(m), sim: 1, memory, code: sim1_cme });
+        items.push(TroubleItem::CmeError { source: CmeSource::GsmModule(m), sim: 2, memory, code: sim2_cme });
+    }
+    items
+}
+
+/// Returns the rules for a specific command.
+fn get_rules(cmd: u8) -> Option<(usize, Vec<FieldRule>)> {
+    match cmd {
+        0x1B => Some((47, vec![
+            bitmask(0, 16, 1, false, TroubleType::TechnicalZoneTrouble),
+            bitmask(16, 8, 1, false, |x| TroubleType::ExpanderAcLoss(x as u8)),
+            bitmask(24, 8, 1, false, |x| TroubleType::ExpanderBatteryLow(x as u8)),
+            bitmask(32, 8, 1, false, |x| TroubleType::ExpanderBatteryMissing(x as u8)),
+            custom(|data, _| decode_system_troubles(data, false)),
+            module_mask(43, false, |x| TroubleType::EthmPingTrouble(x as u8)),
+            module_mask(44, false, |x| TroubleType::EthmServerIdError(x as u8)),
+            module_mask(45, false, |x| TroubleType::EthmSatelServerConnectionError(x as u8)),
+            custom(|data, _| decode_ethm_ptsa_status(data, false)),
+        ])),
+        0x20 => Some((47, vec![
+            bitmask(0, 16, 1, true, TroubleType::TechnicalZoneTrouble),
+            bitmask(16, 8, 1, true, |x| TroubleType::ExpanderAcLoss(x as u8)),
+            bitmask(24, 8, 1, true, |x| TroubleType::ExpanderBatteryLow(x as u8)),
+            bitmask(32, 8, 1, true, |x| TroubleType::ExpanderBatteryMissing(x as u8)),
+            custom(|data, _| decode_system_troubles(data, true)),
+            module_mask(43, true, |x| TroubleType::EthmPingTrouble(x as u8)),
+            module_mask(44, true, |x| TroubleType::EthmServerIdError(x as u8)),
+            module_mask(45, true, |x| TroubleType::EthmSatelServerConnectionError(x as u8)),
+            custom(|data, _| decode_ethm_ptsa_status(data, true)),
+        ])),
+        0x1C => Some((26, vec![
+            bitmask(0, 8, 1, false, |x| TroubleType::ExpanderCardReaderHeadA(x as u8)),
+            bitmask(8, 8, 1, false, |x| TroubleType::ExpanderCardReaderHeadB(x as u8)),
+            bitmask(16, 8, 1, false, |x| TroubleType::ExpanderSupplyOverload(x as u8)),
+            bitmask(24, 2, 1, false, |x| TroubleType::ExpanderAcuJammedOrShortCircuit(x as u8)),
+        ])),
+        0x21 => Some((39, vec![
+            bitmask(0, 8, 1, true, |x| TroubleType::ExpanderCardReaderHeadA(x as u8)),
+            bitmask(8, 8, 1, true, |x| TroubleType::ExpanderCardReaderHeadB(x as u8)),
+            bitmask(16, 8, 1, true, |x| TroubleType::ExpanderSupplyOverload(x as u8)),
+            bitmask(24, 2, 1, true, |x| TroubleType::ExpanderAcuJammedOrShortCircuit(x as u8)),
+            module_mask(26, true, |x| TroubleType::KeypadRestart(x as u8)),
+            bitmask(27, 8, 1, true, |x| TroubleType::ExpanderRestart(x as u8)),
+            custom(|data, _| {
+                let mut items = Vec::new();
+                if data.len() >= 39 {
+                    let cme1 = u16::from_be_bytes([data[35], data[36]]);
+                    let cme2 = u16::from_be_bytes([data[37], data[38]]);
+                    items.push(TroubleItem::CmeError { source: CmeSource::Panel, sim: 1, memory: false, code: cme1 });
+                    items.push(TroubleItem::CmeError { source: CmeSource::Panel, sim: 1, memory: true, code: cme2 });
+                }
+                items
+            }),
+        ])),
+        0x1D => Some((60, vec![
+            custom(|data, memory| decode_acu_jam_level(data, memory)),
+            bitmask(15, 15, 1, false, |z| TroubleType::WirelessDeviceLowBattery { zone_id: z }),
+            bitmask(30, 15, 1, false, |z| TroubleType::WirelessDeviceNoComm { zone_id: z }),
+            bitmask(45, 15, 1, false, |o| TroubleType::WirelessOutputNoComm { output_id: o }),
+        ])),
+        0x22 => Some((60, vec![
+            bitmask(0, 2, 1, true, |x| TroubleType::ExpanderAcuJammedOrShortCircuit(x as u8)),
+            bitmask(2, 2, 1, true, |x| TroubleType::ExpanderAcuJammedOrShortCircuit(x as u8)),
+            bitmask(15, 15, 1, true, |z| TroubleType::WirelessDeviceLowBattery { zone_id: z }),
+            bitmask(30, 15, 1, true, |z| TroubleType::WirelessDeviceNoComm { zone_id: z }),
+            bitmask(45, 15, 1, true, |o| TroubleType::WirelessOutputNoComm { output_id: o }),
+        ])),
+        0x1E => Some((30, vec![
+            bitmask(0, 8, 1, false, |x| TroubleType::ExpanderNoComm(x as u8)),
+            bitmask(8, 8, 1, false, |x| TroubleType::ExpanderSubstituted(x as u8)),
+            module_mask(16, false, |x| TroubleType::KeypadNoComm(x as u8)),
+            module_mask(17, false, |x| TroubleType::KeypadSubstituted(x as u8)),
+            module_mask(18, false, |x| TroubleType::EthmNoLanCable(x as u8)),
+            bitmask(19, 8, 1, false, |x| TroubleType::ExpanderTamper(x as u8)),
+            module_mask(27, false, |x| TroubleType::KeypadTamper(x as u8)),
+            module_mask(28, false, |x| TroubleType::KeypadInitError(x as u8)),
+            custom(|data, memory| decode_aux_stm(data, memory)),
+        ])),
+        0x23 => Some((30, vec![
+            bitmask(0, 8, 1, true, |x| TroubleType::ExpanderNoComm(x as u8)),
+            bitmask(8, 8, 1, true, |x| TroubleType::ExpanderSubstituted(x as u8)),
+            module_mask(16, true, |x| TroubleType::KeypadNoComm(x as u8)),
+            module_mask(17, true, |x| TroubleType::KeypadSubstituted(x as u8)),
+            module_mask(18, true, |x| TroubleType::EthmNoLanCable(x as u8)),
+            bitmask(19, 8, 1, true, |x| TroubleType::ExpanderTamper(x as u8)),
+            module_mask(27, true, |x| TroubleType::KeypadTamper(x as u8)),
+            module_mask(28, true, |x| TroubleType::KeypadInitError(x as u8)),
+            custom(|data, memory| decode_aux_stm(data, memory)),
+        ])),
+        0x1F => Some((31, vec![
+            module_mask(0, false, |x| TroubleType::MasterKeyFobLowBattery(x as u8)),
+            bitmask(1, 30, 1, false, |u| TroubleType::UserKeyFobLowBattery { user_id: u }),
+        ])),
+        0x24 => Some((48, vec![
+            bitmask(0, 16, 1, true, TroubleType::ZoneLongViolationTrouble),
+            bitmask(16, 16, 1, true, TroubleType::ZoneNoViolationTrouble),
+            bitmask(32, 16, 1, true, TroubleType::ZoneTamperTrouble),
+        ])),
+        0x2C => Some((45, vec![
+            bitmask(0, 15, 121, false, |z| TroubleType::WirelessDeviceLowBattery { zone_id: z }),
+            bitmask(15, 15, 121, false, |z| TroubleType::WirelessDeviceNoComm { zone_id: z }),
+            bitmask(30, 15, 121, false, |o| TroubleType::WirelessOutputNoComm { output_id: o }),
+        ])),
+        0x2E => Some((45, vec![
+            bitmask(0, 15, 121, true, |z| TroubleType::WirelessDeviceLowBattery { zone_id: z }),
+            bitmask(15, 15, 121, true, |z| TroubleType::WirelessDeviceNoComm { zone_id: z }),
+            bitmask(30, 15, 121, true, |o| TroubleType::WirelessOutputNoComm { output_id: o }),
+        ])),
+        0x2D => Some((47, vec![
+            bitmask(0, 16, 129, false, TroubleType::TechnicalZoneTrouble),
+            bitmask(16, 16, 129, true, TroubleType::TechnicalZoneTrouble),
+            custom(|data, memory| decode_acu_jam_level_16_30(data, memory)),
+        ])),
+        0x2F => Some((48, vec![
+            bitmask(0, 16, 129, true, TroubleType::ZoneLongViolationTrouble),
+            bitmask(16, 16, 129, true, TroubleType::ZoneNoViolationTrouble),
+            bitmask(32, 16, 129, true, TroubleType::ZoneTamperTrouble),
+        ])),
+        0x30 => Some((64, vec![
+            custom(|data, _| decode_gsm_block(data, false)),
+        ])),
+        0x31 => Some((64, vec![
+            custom(|data, _| decode_gsm_block(data, true)),
+        ])),
+        _ => None,
+    }
+}
+
+/// Core decoder for all trouble/trouble memory frames (0x1B-0x1F, 0x20-0x24, 0x2C-0x2F, 0x30-0x31).
+pub fn decode_troubles(cmd: u8, data: &[u8]) -> Result<Vec<TroubleItem>, SatelError> {
+    let (expected_len, rules) = get_rules(cmd).ok_or(SatelError::InvalidFrame)?;
+    if data.len() < expected_len {
         return Err(SatelError::InvalidFrame);
     }
-
-    let data = &frame[1..];
-    let mut states = Vec::with_capacity(data.len() * 8);
-    for &byte in data {
-        for bit in 0..8 {
-            states.push((byte & (1 << bit)) != 0);
+    
+    let mut items = Vec::new();
+    
+    for rule in rules {
+        match rule {
+            FieldRule::Bitmask { offset, length, start_num, memory, constructor } => {
+                let slice = &data[offset..offset+length];
+                let bits = extract_bits(slice);
+                for (i, &active) in bits.iter().enumerate() {
+                    items.push(TroubleItem::Flag {
+                        trouble: constructor(start_num + i as u16),
+                        memory,
+                        active,
+                    });
+                }
+            }
+            FieldRule::ModuleMask { offset, memory, constructor } => {
+                let byte = data[offset];
+                for bit in 0..8 {
+                    items.push(TroubleItem::Flag {
+                        trouble: constructor((bit + 1) as u8),
+                        memory,
+                        active: (byte & (1 << bit)) != 0,
+                    });
+                }
+            }
+            FieldRule::Custom(extractor) => {
+                items.extend(extractor(data, false));
+            }
         }
     }
-
-    Ok(states)
+    
+    Ok(items)
 }
 
 /// Parses the complete response frame for command 0x1B / 0x20 (Troubles Part 1 - 47 data bytes).
@@ -252,12 +580,11 @@ pub fn process_troubles_part1(frame: &[u8]) -> Result<crate::state::TroublesPart
     })
 }
 
-/// Parses the complete response frame for command 0x1C / 0x21 (Troubles Part 2 - 26 data bytes).
+/// Parses the complete response frame for command 0x1C (Troubles Part 2 state - 26 data bytes).
 pub fn process_troubles_part2(frame: &[u8]) -> Result<crate::state::TroublesPart2Data, SatelError> {
-    if frame.is_empty() || (frame[0] != 0x1C && frame[0] != 0x21) {
+    if frame.is_empty() || frame[0] != 0x1C {
         return Err(SatelError::InvalidFrame);
     }
-    let is_memory = frame[0] == 0x21;
     let data = &frame[1..];
     if data.len() < 26 {
         return Err(SatelError::InvalidFrame);
@@ -269,7 +596,7 @@ pub fn process_troubles_part2(frame: &[u8]) -> Result<crate::state::TroublesPart
     let acu_jammed_or_short_circuit = extract_bits(&data[24..26]);
 
     Ok(crate::state::TroublesPart2Data {
-        is_memory,
+        is_memory: false,
         card_readers_head_a_or_synchro,
         card_readers_head_b_or_charging,
         expanders_supply_overload,
@@ -278,12 +605,34 @@ pub fn process_troubles_part2(frame: &[u8]) -> Result<crate::state::TroublesPart
     })
 }
 
-/// Parses the complete response frame for command 0x1D / 0x22 (Troubles Part 3 - 60 data bytes).
-pub fn process_troubles_part3(frame: &[u8]) -> Result<crate::state::TroublesPart3Data, SatelError> {
-    if frame.is_empty() || (frame[0] != 0x1D && frame[0] != 0x22) {
+/// Parses the complete response frame for command 0x21 (Troubles Part 2 memory - 39 data bytes).
+pub fn process_troubles_memory_part2(frame: &[u8]) -> Result<TroublesMemoryPart2Data, SatelError> {
+    if frame.is_empty() || frame[0] != 0x21 {
         return Err(SatelError::InvalidFrame);
     }
-    let is_memory = frame[0] == 0x22;
+    let data = &frame[1..];
+    if data.len() < 39 {
+        return Err(SatelError::InvalidFrame);
+    }
+    
+    Ok(TroublesMemoryPart2Data {
+        card_readers_head_a_or_synchro: extract_bits(&data[0..8]),
+        card_readers_head_b_or_charging: extract_bits(&data[8..16]),
+        expanders_supply_overload: extract_bits(&data[16..24]),
+        acu_jammed_or_short_circuit: extract_bits(&data[24..26]),
+        keypad_restart: extract_bits(&data[26..27]),
+        expander_restart: extract_bits(&data[27..35]),
+        sim_cme_error: u16::from_be_bytes([data[35], data[36]]),
+        sim_cme_error_memory: u16::from_be_bytes([data[37], data[38]]),
+        read_at: Local::now(),
+    })
+}
+
+/// Parses the complete response frame for command 0x1D (Troubles Part 3 - 60 data bytes).
+pub fn process_troubles_part3(frame: &[u8]) -> Result<crate::state::TroublesPart3Data, SatelError> {
+    if frame.is_empty() || frame[0] != 0x1D {
+        return Err(SatelError::InvalidFrame);
+    }
     let data = &frame[1..];
     if data.len() < 60 {
         return Err(SatelError::InvalidFrame);
@@ -295,7 +644,7 @@ pub fn process_troubles_part3(frame: &[u8]) -> Result<crate::state::TroublesPart
     let wireless_outputs_no_comm = extract_bits(&data[45..60]);
 
     Ok(crate::state::TroublesPart3Data {
-        is_memory,
+        is_memory: false,
         acu_jam_levels,
         wireless_devices_low_battery,
         wireless_devices_no_comm,
@@ -303,6 +652,27 @@ pub fn process_troubles_part3(frame: &[u8]) -> Result<crate::state::TroublesPart
         read_at: Local::now(),
     })
 }
+
+/// Parses the complete response frame for command 0x22 (Troubles Part 3 memory - 60 data bytes).
+pub fn process_troubles_memory_part3(frame: &[u8]) -> Result<TroublesMemoryPart3Data, SatelError> {
+    if frame.is_empty() || frame[0] != 0x22 {
+        return Err(SatelError::InvalidFrame);
+    }
+    let data = &frame[1..];
+    if data.len() < 60 {
+        return Err(SatelError::InvalidFrame);
+    }
+    
+    Ok(TroublesMemoryPart3Data {
+        acu_jammed_or_short_circuit: extract_bits(&data[0..2]),
+        acu_jammed_or_short_circuit_memory: extract_bits(&data[2..4]),
+        wireless_devices_low_battery: extract_bits(&data[15..30]),
+        wireless_devices_no_comm: extract_bits(&data[30..45]),
+        wireless_outputs_no_comm: extract_bits(&data[45..60]),
+        read_at: Local::now(),
+    })
+}
+
 
 /// Parses the complete response frame for command 0x1E / 0x23 (Troubles Part 4 - 30 data bytes).
 pub fn process_troubles_part4(frame: &[u8]) -> Result<crate::state::TroublesPart4Data, SatelError> {
@@ -340,12 +710,11 @@ pub fn process_troubles_part4(frame: &[u8]) -> Result<crate::state::TroublesPart
     })
 }
 
-/// Parses the complete response frame for command 0x1F / 0x24 (Troubles Part 5 - 31 data bytes).
+/// Parses the complete response frame for command 0x1F (Troubles Part 5 - 31 data bytes).
 pub fn process_troubles_part5(frame: &[u8]) -> Result<crate::state::TroublesPart5Data, SatelError> {
-    if frame.is_empty() || (frame[0] != 0x1F && frame[0] != 0x24) {
+    if frame.is_empty() || frame[0] != 0x1F {
         return Err(SatelError::InvalidFrame);
     }
-    let is_memory = frame[0] == 0x24;
     let data = &frame[1..];
     if data.len() < 31 {
         return Err(SatelError::InvalidFrame);
@@ -355,9 +724,27 @@ pub fn process_troubles_part5(frame: &[u8]) -> Result<crate::state::TroublesPart
     let users_key_fobs_low_battery = extract_bits(&data[1..31]);
 
     Ok(crate::state::TroublesPart5Data {
-        is_memory,
+        is_memory: false,
         masters_key_fobs_low_battery,
         users_key_fobs_low_battery,
+        read_at: Local::now(),
+    })
+}
+
+/// Parses the complete response frame for command 0x24 (Troubles Part 5 memory - 48 data bytes).
+pub fn process_troubles_memory_part5(frame: &[u8]) -> Result<TroublesMemoryPart5Data, SatelError> {
+    if frame.is_empty() || frame[0] != 0x24 {
+        return Err(SatelError::InvalidFrame);
+    }
+    let data = &frame[1..];
+    if data.len() < 48 {
+        return Err(SatelError::InvalidFrame);
+    }
+    
+    Ok(TroublesMemoryPart5Data {
+        zone_long_violation: extract_bits(&data[0..16]),
+        zone_no_violation: extract_bits(&data[16..32]),
+        zone_tamper: extract_bits(&data[32..48]),
         read_at: Local::now(),
     })
 }
@@ -386,12 +773,11 @@ pub fn process_troubles_part6(frame: &[u8]) -> Result<crate::state::TroublesPart
     })
 }
 
-/// Parses the complete response frame for command 0x2D / 0x2F (Troubles Part 7 - 47 data bytes - Integra 256).
+/// Parses the complete response frame for command 0x2D (Troubles Part 7 - 47 data bytes - Integra 256).
 pub fn process_troubles_part7(frame: &[u8]) -> Result<crate::state::TroublesPart7Data, SatelError> {
-    if frame.is_empty() || (frame[0] != 0x2D && frame[0] != 0x2F) {
+    if frame.is_empty() || frame[0] != 0x2D {
         return Err(SatelError::InvalidFrame);
     }
-    let is_memory = frame[0] == 0x2F;
     let data = &frame[1..];
     if data.len() < 47 {
         return Err(SatelError::InvalidFrame);
@@ -402,13 +788,32 @@ pub fn process_troubles_part7(frame: &[u8]) -> Result<crate::state::TroublesPart
     let acu_jam_levels = data[32..47].to_vec();
 
     Ok(crate::state::TroublesPart7Data {
-        is_memory,
+        is_memory: false,
         technical_zones,
         technical_zones_memory,
         acu_jam_levels,
         read_at: Local::now(),
     })
 }
+
+/// Parses the complete response frame for command 0x2F (Troubles Part 7 memory - 48 data bytes).
+pub fn process_troubles_memory_part7(frame: &[u8]) -> Result<TroublesMemoryPart7Data, SatelError> {
+    if frame.is_empty() || frame[0] != 0x2F {
+        return Err(SatelError::InvalidFrame);
+    }
+    let data = &frame[1..];
+    if data.len() < 48 {
+        return Err(SatelError::InvalidFrame);
+    }
+    
+    Ok(TroublesMemoryPart7Data {
+        zone_long_violation: extract_bits(&data[0..16]),
+        zone_no_violation: extract_bits(&data[16..32]),
+        zone_tamper: extract_bits(&data[32..48]),
+        read_at: Local::now(),
+    })
+}
+
 
 /// Parses the complete response frame for command 0x30 / 0x31 (Troubles Part 8 - 64 data bytes).
 pub fn process_troubles_part8(frame: &[u8]) -> Result<crate::state::TroublesPart8Data, SatelError> {
@@ -480,12 +885,16 @@ pub fn process_troubles_frame(frame: &[u8]) -> Result<crate::state::TroublesData
     }
     match frame[0] {
         0x1B | 0x20 => Ok(crate::state::TroublesData::Part1(process_troubles_part1(frame)?)),
-        0x1C | 0x21 => Ok(crate::state::TroublesData::Part2(process_troubles_part2(frame)?)),
-        0x1D | 0x22 => Ok(crate::state::TroublesData::Part3(process_troubles_part3(frame)?)),
+        0x1C => Ok(crate::state::TroublesData::Part2(process_troubles_part2(frame)?)),
+        0x21 => Ok(crate::state::TroublesData::MemoryPart2(process_troubles_memory_part2(frame)?)),
+        0x1D => Ok(crate::state::TroublesData::Part3(process_troubles_part3(frame)?)),
+        0x22 => Ok(crate::state::TroublesData::MemoryPart3(process_troubles_memory_part3(frame)?)),
         0x1E | 0x23 => Ok(crate::state::TroublesData::Part4(process_troubles_part4(frame)?)),
-        0x1F | 0x24 => Ok(crate::state::TroublesData::Part5(process_troubles_part5(frame)?)),
+        0x1F => Ok(crate::state::TroublesData::Part5(process_troubles_part5(frame)?)),
+        0x24 => Ok(crate::state::TroublesData::MemoryPart5(process_troubles_memory_part5(frame)?)),
         0x2C | 0x2E => Ok(crate::state::TroublesData::Part6(process_troubles_part6(frame)?)),
-        0x2D | 0x2F => Ok(crate::state::TroublesData::Part7(process_troubles_part7(frame)?)),
+        0x2D => Ok(crate::state::TroublesData::Part7(process_troubles_part7(frame)?)),
+        0x2F => Ok(crate::state::TroublesData::MemoryPart7(process_troubles_memory_part7(frame)?)),
         0x30 | 0x31 => Ok(crate::state::TroublesData::Part8(process_troubles_part8(frame)?)),
         _ => Err(SatelError::InvalidFrame),
     }
@@ -565,246 +974,3 @@ pub fn process_auto_read_response(
         total_requested,
     }
 }
-
-/// Maps trouble part index (0..7 for Parts 1..8) and bit index within frame to a strongly-typed `TroubleType`.
-pub fn map_trouble_part_bit(part: u8, bit: u16) -> TroubleType {
-    match part {
-        // Part 1 (0x1B / 0x20 - 47 bytes = 376 bits)
-        0 => match bit {
-            0..=127 => TroubleType::TechnicalZoneTrouble(bit + 1),
-            128..=191 => TroubleType::ExpanderAcLoss((bit - 128 + 1) as u8),
-            192..=255 => TroubleType::ExpanderBatteryLow((bit - 192 + 1) as u8),
-            256..=319 => TroubleType::ExpanderBatteryMissing((bit - 256 + 1) as u8),
-            320 => TroubleType::MainBoardOutOverload(1),
-            321 => TroubleType::MainBoardOutOverload(2),
-            322 => TroubleType::MainBoardOutOverload(3),
-            323 => TroubleType::MainBoardOutOverload(4),
-            324 => TroubleType::MainBoardKpdPowerOverload,
-            325 => TroubleType::MainBoardExPowerOverload,
-            326 => TroubleType::MainBoardBatteryLow,
-            327 => TroubleType::MainBoardAcLoss,
-            328 => TroubleType::MainBoardDataBusDt1,
-            329 => TroubleType::MainBoardDataBusDt2,
-            330 => TroubleType::MainBoardDataBusDtm,
-            331 => TroubleType::RtcLoss,
-            332 => TroubleType::NoDtrSignal,
-            333 => TroubleType::MainBoardBatteryMissing,
-            334 => TroubleType::ExternalModemInitTrouble,
-            335 => TroubleType::ExternalModemCmdTrouble,
-            336 => TroubleType::TelephoneLineNoVoltage,
-            337 => TroubleType::TelephoneLineBadSignal,
-            338 => TroubleType::TelephoneLineNoSignal,
-            339 => TroubleType::MonitoringStation1Trouble,
-            340 => TroubleType::MonitoringStation2Trouble,
-            341 => TroubleType::EepromRtcTrouble,
-            342 => TroubleType::RamMemoryError,
-            343 => TroubleType::MainPanelRestartMemory,
-            344..=351 => TroubleType::EthmPingTrouble,
-            352..=359 => TroubleType::EthmServerIdError,
-            360..=367 => TroubleType::EthmSatelServerConnectionError,
-            368 => TroubleType::EthmMonitoringStation1Error,
-            369 => TroubleType::EthmMonitoringStation2Error,
-            370 => TroubleType::GprsMonitoringStation1Error,
-            371 => TroubleType::GprsMonitoringStation2Error,
-            372 => TroubleType::TimeServerTrouble,
-            373 => TroubleType::GsmInitError,
-            374 => TroubleType::IpMonitoringStation1Trouble,
-            375 => TroubleType::IpMonitoringStation2Trouble,
-            _ => TroubleType::GenericTrouble { part, bit },
-        },
-
-        // Part 2 (0x1C / 0x21 - 26 bytes = 208 bits)
-        1 => match bit {
-            0..=63 => TroubleType::ExpanderCardReaderHeadA((bit + 1) as u8),
-            64..=127 => TroubleType::ExpanderCardReaderHeadB((bit - 64 + 1) as u8),
-            128..=191 => TroubleType::ExpanderSupplyOverload((bit - 128 + 1) as u8),
-            192..=207 => TroubleType::ExpanderAcuJammedOrShortCircuit((bit - 192 + 1) as u8),
-            _ => TroubleType::GenericTrouble { part, bit },
-        },
-
-        // Part 3 (0x1D / 0x22 - 60 bytes = 480 bits)
-        2 => match bit {
-            0..=119 => TroubleType::AcuModuleJamLevel((bit / 8 + 1) as u8),
-            120..=239 => TroubleType::WirelessDeviceLowBattery { zone_id: bit - 120 + 1 },
-            240..=359 => TroubleType::WirelessDeviceNoComm { zone_id: bit - 240 + 1 },
-            360..=479 => TroubleType::WirelessOutputNoComm { output_id: bit - 360 + 1 },
-            _ => TroubleType::GenericTrouble { part, bit },
-        },
-
-        // Part 4 (0x1E / 0x23 - 30 bytes = 240 bits)
-        3 => match bit {
-            0..=63 => TroubleType::ExpanderNoComm((bit + 1) as u8),
-            64..=127 => TroubleType::ExpanderSubstituted((bit - 64 + 1) as u8),
-            128..=135 => TroubleType::KeypadNoComm((bit - 128 + 1) as u8),
-            136..=143 => TroubleType::KeypadSubstituted((bit - 136 + 1) as u8),
-            144..=151 => TroubleType::EthmNoLanCable((bit - 144 + 1) as u8),
-            152..=215 => TroubleType::ExpanderTamper((bit - 152 + 1) as u8),
-            216..=223 => TroubleType::KeypadTamper((bit - 216 + 1) as u8),
-            224..=231 => TroubleType::KeypadInitError((bit - 224 + 1) as u8),
-            232..=239 => TroubleType::AuxiliaryStmTroubles,
-            _ => TroubleType::GenericTrouble { part, bit },
-        },
-
-        // Part 5 (0x1F / 0x24 - 31 bytes = 248 bits)
-        4 => match bit {
-            0..=7 => TroubleType::MasterKeyFobLowBattery((bit + 1) as u8),
-            8..=247 => TroubleType::UserKeyFobLowBattery { user_id: bit - 8 + 1 },
-            _ => TroubleType::GenericTrouble { part, bit },
-        },
-
-        // Part 6 (0x2C / 0x2E - 45 bytes = 360 bits - Integra 256)
-        5 => match bit {
-            0..=119 => TroubleType::WirelessDeviceLowBattery { zone_id: bit + 121 },
-            120..=239 => TroubleType::WirelessDeviceNoComm { zone_id: bit - 120 + 121 },
-            240..=359 => TroubleType::WirelessOutputNoComm { output_id: bit - 240 + 121 },
-            _ => TroubleType::GenericTrouble { part, bit },
-        },
-
-        // Part 7 (0x2D / 0x2F - 47 bytes = 376 bits - Integra 256)
-        6 => match bit {
-            0..=127 => TroubleType::TechnicalZoneTrouble(bit + 129),
-            128..=255 => TroubleType::TechnicalZoneTrouble(bit - 128 + 129),
-            256..=375 => TroubleType::AcuModuleJamLevel(((bit - 256) / 8 + 16) as u8),
-            _ => TroubleType::GenericTrouble { part, bit },
-        },
-
-        // Part 8 (0x30 / 0x31 - 64 bytes = 512 bits)
-        7 => {
-            let module = (bit / 64) as u8;
-            let off = bit % 64;
-            match off {
-                0 => TroubleType::GsmTrouble { module_address: module, desc: "No ETHM Connection to Monitoring Station 1" },
-                1 => TroubleType::GsmTrouble { module_address: module, desc: "No ETHM Connection to Monitoring Station 2" },
-                2 => TroubleType::GsmTrouble { module_address: module, desc: "No GPRS SIM1 Connection to Monitoring Station 1" },
-                3 => TroubleType::GsmTrouble { module_address: module, desc: "No GPRS SIM1 Connection to Monitoring Station 2" },
-                4 => TroubleType::GsmTrouble { module_address: module, desc: "No GPRS SIM2 Connection to Monitoring Station 1" },
-                5 => TroubleType::GsmTrouble { module_address: module, desc: "No GPRS SIM2 Connection to Monitoring Station 2" },
-                6 => TroubleType::GsmTrouble { module_address: module, desc: "No SMS SIM1 Connection to Monitoring Station 1" },
-                7 => TroubleType::GsmTrouble { module_address: module, desc: "No SMS SIM1 Connection to Monitoring Station 2" },
-                8 => TroubleType::GsmTrouble { module_address: module, desc: "No SMS SIM2 Connection to Monitoring Station 1" },
-                9 => TroubleType::GsmTrouble { module_address: module, desc: "No SMS SIM2 Connection to Monitoring Station 2" },
-                10 => TroubleType::GsmSimPinError { module, sim: 1 },
-                11 => TroubleType::GsmSimPinError { module, sim: 2 },
-                12 => TroubleType::GsmSimLoggingError { module, sim: 1 },
-                13 => TroubleType::GsmSimLoggingError { module, sim: 2 },
-                14 => TroubleType::GsmSimCreditLow { module, sim: 1 },
-                15 => TroubleType::GsmSimCreditLow { module, sim: 2 },
-                16 => TroubleType::GsmSimSmsError { module, sim: 1 },
-                17 => TroubleType::GsmSimSmsError { module, sim: 2 },
-                18 => TroubleType::GsmJamming(module),
-                19 => TroubleType::GsmSettingsCrcError(module),
-                20 => TroubleType::GsmModuleMissing(module),
-                21 => TroubleType::GsmModuleChanged(module),
-                22 => TroubleType::GsmServerConnError(module),
-                23 => TroubleType::GsmMailServerConnError(module),
-                24 => TroubleType::GsmNtpServerConnError(module),
-                _ => TroubleType::GenericTrouble { part, bit },
-            }
-        }
-
-        _ => TroubleType::GenericTrouble { part, bit },
-    }
-}
-
-/// Maps global trouble bit index to a named `TroubleType`.
-pub fn map_trouble_bit(index: u16) -> TroubleType {
-    let part = (index / 40) as u8;
-    let bit = index % 40;
-    map_trouble_part_bit(part, bit)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_process_integra_version() {
-        let mut frame = vec![0x7E, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        
-        frame[1] = 0;
-        let v = process_integra_version(&frame).unwrap();
-        assert_eq!(v.model, "INTEGRA 24");
-        assert_eq!(v.io_count, 24);
-        assert_eq!(v.partition_count, 4);
-
-        frame[1] = 1;
-        let v = process_integra_version(&frame).unwrap();
-        assert_eq!(v.model, "INTEGRA 32");
-        assert_eq!(v.io_count, 32);
-        assert_eq!(v.partition_count, 16);
-
-        frame[1] = 2;
-        let v = process_integra_version(&frame).unwrap();
-        assert_eq!(v.model, "INTEGRA 64");
-        assert_eq!(v.io_count, 64);
-        assert_eq!(v.partition_count, 32);
-
-        frame[1] = 72;
-        let v = process_integra_version(&frame).unwrap();
-        assert_eq!(v.model, "INTEGRA 256 Plus");
-        assert_eq!(v.io_count, 256);
-        assert_eq!(v.partition_count, 32);
-
-        frame[1] = 200;
-        let v = process_integra_version(&frame).unwrap();
-        assert_eq!(v.model, "Unknown INTEGRA");
-        assert_eq!(v.io_count, 0);
-        assert_eq!(v.partition_count, 0);
-    }
-
-    #[test]
-    fn test_process_troubles_part1() {
-        let mut frame = vec![0x1B];
-        frame.extend(vec![0u8; 47]);
-        // Set technical zone 1 active
-        frame[1] = 0x01;
-        // Set expander 1 AC loss active
-        frame[17] = 0x01;
-        // Set Main board AC trouble (byte 40 bit 7) and Battery trouble (byte 40 bit 6)
-        frame[41] = 0b11000000;
-
-        let result = process_troubles_part1(&frame).expect("Should parse part 1");
-        assert!(!result.is_memory);
-        assert!(result.technical_zones[0]);
-        assert!(!result.technical_zones[1]);
-        assert!(result.expanders_ac[0]);
-        assert!(!result.expanders_ac[1]);
-        assert!(result.main_board.ac_trouble);
-        assert!(result.main_board.battery_trouble);
-        assert!(!result.main_board.out1_trouble);
-    }
-
-    #[test]
-    fn test_process_troubles_part8() {
-        let mut frame = vec![0x30];
-        frame.extend(vec![0u8; 64]);
-        // Module 0: wrong PIN on SIM1 (byte 1 bit 2), GSM jamming (byte 2 bit 2)
-        frame[2] = 0b00000100;
-        frame[3] = 0b00000100;
-        // SIM1 CME error = 0x0021 (error 33)
-        frame[5] = 0x00;
-        frame[6] = 0x21;
-
-        let result = process_troubles_part8(&frame).expect("Should parse part 8");
-        assert_eq!(result.gsm_modules.len(), 8);
-        assert!(result.gsm_modules[0].wrong_sim1_pin);
-        assert!(result.gsm_modules[0].gsm_jamming);
-        assert_eq!(result.gsm_modules[0].sim1_cme_error, 0x0021);
-        assert!(!result.gsm_modules[0].wrong_sim2_pin);
-    }
-
-    #[test]
-    fn test_process_troubles_frame_dispatcher() {
-        let mut frame = vec![0x1C];
-        frame.extend(vec![0u8; 26]);
-        let result = process_troubles_frame(&frame).expect("Should dispatch part 2");
-        match result {
-            crate::state::TroublesData::Part2(p2) => {
-                assert!(!p2.is_memory);
-                assert_eq!(p2.card_readers_head_a_or_synchro.len(), 64);
-            }
-            _ => panic!("Expected Part2"),
-        }
-    }
-}
-

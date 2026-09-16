@@ -195,6 +195,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 // --- Protocol Messages ---
+                SatelEvent::AcuJamLevel { module, level } => {
+                    println!("[{}] [ACU JAM]         Module #{:03} -> Level {}", ts, module, level);
+                }
+                SatelEvent::CmeError { source, sim, code, memory } => {
+                    println!("[{}] [CME ERROR]       Source {:?} SIM{} -> Code {} (Memory: {})", ts, source, sim, code, memory);
+                }
                 SatelEvent::AutoReadConfigured(report) => {
                     println!("[{}] [AUTOREAD CONFIG]   Active Items: {}/{}", ts, report.success_count, report.total_requested);
                 }

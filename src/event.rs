@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::command::SatelResult;
 use crate::state::{
-    AutoReadReport, ConnectionState, EthmVersion, IntegraVersion, SystemStatus,
+    AutoReadReport, CmeSource, ConnectionState, EthmVersion, IntegraVersion, SystemStatus,
     TemperatureSensorStatus, TroubleType,
 };
 
@@ -92,6 +92,12 @@ pub enum SatelEvent {
     Trouble(TroubleType, bool),
     /// System trouble memory state changed.
     TroubleMemory(TroubleType, bool),
+    /// ACU-100 module jamming level updated.
+    AcuJamLevel { module: u8, level: u8 },
+    /// GSM modem CME error reported.
+    /// `code` is the raw BCD value directly from the frame (e.g., 0x0123 means code 123).
+    /// `code == 0` means no error.
+    CmeError { source: CmeSource, sim: u8, code: u16, memory: bool },
     /// System status bits updated (0x1A).
     SystemStatusChanged(SystemStatus),
     /// Batch name sync started for a category (zones, outputs, partitions).

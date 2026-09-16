@@ -4,7 +4,7 @@ use crate::client::SatelIntegra;
 use crate::command::SatelCommand;
 use crate::error::SatelError;
 use crate::event::SatelEvent;
-use crate::parsers::map_trouble_part_bit;
+
 use crate::state::{
     EthmVersion, IntegraVersion, OutputsStateData, PartitionsArmedData, PartitionsData,
     SystemStatus, ZonesAlarmData, ZonesAlarmMemoryData, ZonesBypassData,
@@ -341,45 +341,35 @@ impl SatelIntegra {
         Ok(())
     }
 
-    pub(crate) fn update_troubles_internal(&self, cmd: SatelCommand, states: Vec<bool>) -> Result<(), SatelError> {
-        let byte_cmd = cmd.to_byte();
-        let is_memory = (0x20..=0x24).contains(&byte_cmd)
-            || (0x2E..=0x2F).contains(&byte_cmd)
-            || byte_cmd == 0x31;
-
-        let part_index = match byte_cmd {
-            0x1B | 0x20 => 0,
-            0x1C | 0x21 => 1,
-            0x1D | 0x22 => 2,
-            0x1E | 0x23 => 3,
-            0x1F | 0x24 => 4,
-            0x2C | 0x2E => 5,
-            0x2D | 0x2F => 6,
-            0x30 | 0x31 => 7,
-            _ => return Ok(()),
-        };
-
+    pub(crate) fn update_troubles_internal(&self, cmd: SatelCommand, data: &[u8]) -> Result<(), SatelError> {
+        let items = crate::parsers::decode_troubles(cmd.to_byte(), data)?;
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
-        let target = if is_memory {
-            &mut state.troubles_memory[part_index]
-        } else {
-            &mut state.troubles[part_index]
-        };
+        let emit_unchanged = self.config.read().unwrap().emit_unchanged_troubles;
 
-        if target.len() < states.len() {
-            target.resize(states.len(), false);
-        }
-
-        for (bit_idx, &new_val) in states.iter().enumerate() {
-            let changed = target[bit_idx] != new_val;
-            if changed || self.config.read().unwrap().emit_unchanged_troubles {
-                target[bit_idx] = new_val;
-                let trouble_type = map_trouble_part_bit(part_index as u8, bit_idx as u16);
-                let _ = if is_memory {
-                    self.event_tx.send(SatelEvent::TroubleMemory(trouble_type, new_val))
-                } else {
-                    self.event_tx.send(SatelEvent::Trouble(trouble_type, new_val))
-                };
+        for item in items {
+            match item {
+                crate::parsers::TroubleItem::Flag { trouble, memory, active } => {
+                    let changed = state.trouble_flags.insert((trouble, memory), active) != Some(active);
+                    if changed || emit_unchanged {
+                        if memory {
+                            let _ = self.event_tx.send(SatelEvent::TroubleMemory(trouble, active));
+                        } else {
+                            let _ = self.event_tx.send(SatelEvent::Trouble(trouble, active));
+                        }
+                    }
+                }
+                crate::parsers::TroubleItem::AcuJamLevel { module, level } => {
+                    let changed = state.acu_jam_levels.insert(module, level) != Some(level);
+                    if changed || emit_unchanged {
+                        let _ = self.event_tx.send(SatelEvent::AcuJamLevel { module, level });
+                    }
+                }
+                crate::parsers::TroubleItem::CmeError { source, sim, memory, code } => {
+                    let changed = state.cme_errors.insert((source, sim, memory), code) != Some(code);
+                    if changed || emit_unchanged {
+                        let _ = self.event_tx.send(SatelEvent::CmeError { source, sim, code, memory });
+                    }
+                }
             }
         }
 
