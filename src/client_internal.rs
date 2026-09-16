@@ -389,7 +389,7 @@ mod tests {
     use crate::config::Config;
 
     fn setup_client() -> (SatelIntegra, broadcast::Receiver<SatelEvent>) {
-        let (tx, rx) = broadcast::channel(100);
+        let (tx, rx) = broadcast::channel(1000);
         let state = Arc::new(RwLock::new(SatelState::new()));
         let config = Arc::new(RwLock::new(Config::default()));
         
@@ -476,5 +476,100 @@ mod tests {
         let data = vec![0; 64];
         client.update_troubles_internal(SatelCommand::TroublesPart8, &data).unwrap();
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_t4_trouble_flag_duplicate() {
+        let (client, mut rx) = setup_client();
+        let mut data = vec![0; 47];
+        data[0] = 0x01;
+        client.update_troubles_internal(SatelCommand::TroublesPart1, &data).unwrap();
+        let _ = rx.try_recv().unwrap(); // first event
+        assert!(rx.try_recv().is_err());
+
+        // duplicate frame
+        client.update_troubles_internal(SatelCommand::TroublesPart1, &data).unwrap();
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_t4_acu_jam_level_duplicate() {
+        let (client, mut rx) = setup_client();
+        let mut data = vec![0; 60];
+        
+        // 0 -> 0
+        client.update_troubles_internal(SatelCommand::TroublesPart3, &data).unwrap();
+        assert!(rx.try_recv().is_err());
+
+        // 0 -> 5
+        data[0] = 5;
+        client.update_troubles_internal(SatelCommand::TroublesPart3, &data).unwrap();
+        let _ = rx.try_recv().unwrap();
+        
+        // 5 -> 5
+        client.update_troubles_internal(SatelCommand::TroublesPart3, &data).unwrap();
+        assert!(rx.try_recv().is_err());
+
+        // 5 -> 0
+        data[0] = 0;
+        client.update_troubles_internal(SatelCommand::TroublesPart3, &data).unwrap();
+        let _ = rx.try_recv().unwrap();
+    }
+
+    #[test]
+    fn test_t4_cme_error_flow() {
+        let (client, mut rx) = setup_client();
+        let mut data = vec![0; 64];
+        
+        // 0x00 0x10
+        data[62] = 0x00;
+        data[63] = 0x10;
+        client.update_troubles_internal(SatelCommand::TroublesPart8, &data).unwrap();
+        match rx.try_recv().unwrap() {
+            SatelEvent::CmeError { code: 0x0010, .. } => {}
+            _ => panic!("Expected CmeError with 0x0010"),
+        }
+        assert!(rx.try_recv().is_err());
+
+        // duplicate
+        client.update_troubles_internal(SatelCommand::TroublesPart8, &data).unwrap();
+        assert!(rx.try_recv().is_err());
+
+        // zeros -> event with code 0
+        data[62] = 0x00;
+        data[63] = 0x00;
+        client.update_troubles_internal(SatelCommand::TroublesPart8, &data).unwrap();
+        match rx.try_recv().unwrap() {
+            SatelEvent::CmeError { code: 0, .. } => {}
+            _ => panic!("Expected CmeError with 0"),
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_t4_emit_unchanged_troubles() {
+        let (client, mut rx) = setup_client();
+        client.config.write().unwrap().emit_unchanged_troubles = true;
+        let data = vec![0; 47];
+        
+        // first read
+        client.update_troubles_internal(SatelCommand::TroublesPart1, &data).unwrap();
+        let mut first_count = 0;
+        while let Ok(_) = rx.try_recv() {
+            first_count += 1;
+        }
+
+        // second read
+        client.update_troubles_internal(SatelCommand::TroublesPart1, &data).unwrap();
+        let mut second_count = 0;
+        while let Ok(_) = rx.try_recv() {
+            second_count += 1;
+        }
+
+        let decoded = crate::parsers::system::decode_troubles(0x1B, &data).unwrap();
+        let expected_count = decoded.len();
+
+        assert_eq!(first_count, expected_count);
+        assert_eq!(second_count, expected_count);
     }
 }
