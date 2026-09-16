@@ -19,7 +19,7 @@ use crate::parsers::{
 };
 use crate::polling_worker::{SatelPollingWorker, TemperaturePollingTask};
 use crate::state::{
-    EthmVersion, IntegraVersion, OutputName, PartitionName, SatelState, SatelStateHandle,
+    AutoReadReport, EthmVersion, IntegraVersion, OutputName, PartitionName, SatelState, SatelStateHandle,
     SystemStatus, TemperatureSensorStatus, TroublesData, TroublesPart1Data, TroublesPart2Data,
     TroublesPart3Data, TroublesPart4Data, TroublesPart5Data, TroublesPart6Data, TroublesPart7Data,
     TroublesPart8Data, ZoneName, ZoneStatus, ZoneTemperature,
@@ -344,6 +344,12 @@ impl SatelIntegra {
             .zones
             .get((zone_id.wrapping_sub(1) % 256) as usize)
             .map(|z| z.to_zone_name()))
+    }
+
+    /// Returns the most recently configured auto-read push notification report from memory.
+    pub fn auto_read_report(&self) -> Result<Option<AutoReadReport>, SatelError> {
+        let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
+        Ok(state.auto_read_report.clone())
     }
 
     /// Queries the UTF-8 names of all zones configured in the panel.

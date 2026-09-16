@@ -865,6 +865,7 @@ pub struct SatelState {
     pub system_status: Option<SystemStatus>,
     pub troubles: [Vec<bool>; 8],
     pub troubles_memory: [Vec<bool>; 8],
+    pub auto_read_report: Option<AutoReadReport>,
 }
 
 impl Default for SatelState {
@@ -898,6 +899,7 @@ impl SatelState {
             system_status: None,
             troubles: Default::default(),
             troubles_memory: Default::default(),
+            auto_read_report: None,
         }
     }
 }

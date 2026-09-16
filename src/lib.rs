@@ -44,6 +44,7 @@ pub mod error;
 pub mod event;
 pub mod parsers;
 pub mod state;
+pub mod trouble_catalog;
 
 // --- Re-exports of primary public types ---
 pub use client::SatelIntegra;
@@ -61,6 +62,7 @@ pub use state::{
     TroublesPart5Data, TroublesPart6Data, TroublesPart7Data, TroublesPart8Data, Zone, ZoneName,
     ZoneStatus, ZoneTemperature,
 };
+pub use trouble_catalog::{TroubleAddress, TroubleAddressing, TroubleDescriptor, TroubleDomain};
 
 use std::sync::Once;
 

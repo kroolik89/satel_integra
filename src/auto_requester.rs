@@ -43,6 +43,11 @@ impl SatelAutoRequester {
                                 let _ = self.integra.update_ethm_version_internal(v);
                             }
                             StateWorkerMessage::AutoReadReport(report) => {
+                                {
+                                    if let Ok(mut state) = self.integra.state.write() {
+                                        state.auto_read_report = Some(report.clone());
+                                    }
+                                }
                                 let _ = self.integra.event_tx.send(SatelEvent::AutoReadConfigured(report));
                             }
                         }
