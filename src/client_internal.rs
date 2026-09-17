@@ -13,7 +13,32 @@ use crate::state::{
 };
 use chrono::Local;
 
+pub(crate) struct TempLimits {
+    pub max_timeout_errors: u32,
+    pub max_sensor_errors: u32,
+    pub unblock_enabled: bool,
+    pub unblock_after_cycles: u32,
+}
+
 impl SatelIntegra {
+    pub(crate) fn temp_limits(&self, zone_id: u16) -> TempLimits {
+        let config = self.config.read().unwrap();
+        if let Some(probe) = config.temperature_probes.iter().find(|p| p.zone_id == zone_id) {
+            TempLimits {
+                max_timeout_errors: probe.max_timeout_errors,
+                max_sensor_errors: probe.max_sensor_errors,
+                unblock_enabled: probe.unblock_enabled,
+                unblock_after_cycles: probe.unblock_after_cycles,
+            }
+        } else {
+            TempLimits {
+                max_timeout_errors: config.temp_max_timeout_errors,
+                max_sensor_errors: config.temp_max_sensor_errors,
+                unblock_enabled: false,
+                unblock_after_cycles: crate::config::MIN_UNBLOCK_AFTER_CYCLES,
+            }
+        }
+    }
     pub(crate) fn update_integra_version_internal(&self, version: IntegraVersion) -> Result<(), SatelError> {
         {
             let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
@@ -33,6 +58,8 @@ impl SatelIntegra {
     }
 
     pub(crate) fn update_temp_error(&self, zone_id: u16, error: &SatelError) -> Result<(), SatelError> {
+        let limits = self.temp_limits(zone_id);
+        
         let (zone_id, reported_status) = {
             let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
             let zone = state
@@ -44,8 +71,9 @@ impl SatelIntegra {
                 SatelError::Timeout | SatelError::TemperatureNotSupportedOrTimeOut => {
                     zone.temperature_timeout_errors_total += 1;
                     zone.temperature_timeout_errors_current += 1;
-                    if zone.temperature_timeout_errors_current >= self.config.read().unwrap().temp_max_timeout_errors {
+                    if zone.temperature_timeout_errors_current >= limits.max_timeout_errors {
                         zone.temperature_status = crate::state::TemperatureSensorStatus::BlockSensorMissing;
+                        zone.temperature_blocked_cycles = 0;
                     } else {
                         zone.temperature_status = crate::state::TemperatureSensorStatus::SensorMissing;
                     }
@@ -55,8 +83,9 @@ impl SatelIntegra {
                 SatelError::TemperatureSensorError => {
                     zone.temperature_sensor_errors_total += 1;
                     zone.temperature_sensor_errors_current += 1;
-                    if zone.temperature_sensor_errors_current >= self.config.read().unwrap().temp_max_sensor_errors {
+                    if zone.temperature_sensor_errors_current >= limits.max_sensor_errors {
                         zone.temperature_status = crate::state::TemperatureSensorStatus::BlockCommunicationError;
+                        zone.temperature_blocked_cycles = 0;
                     } else {
                         zone.temperature_status = crate::state::TemperatureSensorStatus::CommunicationError;
                     }

@@ -1,5 +1,24 @@
 use crate::error::SatelError;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+/// Czujnik temperatury odpytywany cyklicznie, z własnymi parametrami.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemperatureProbe {
+    pub zone_id: u16,                 // 1..=256
+    pub interval_minutes: u64,        // 0 traktowane jak 1
+    pub max_timeout_errors: u32,      // próg blokady „brak czujnika / timeout”
+    pub max_sensor_errors: u32,       // próg blokady „błąd sondy 0xFFFF”
+    #[serde(default)]
+    pub unblock_enabled: bool,        // domyślnie false (T2)
+    #[serde(default = "default_unblock_after_cycles")]
+    pub unblock_after_cycles: u32,    // domyślnie 10, minimum 10 (T2)
+}
+
+pub const MIN_UNBLOCK_AFTER_CYCLES: u32 = 10;
+
+fn default_unblock_after_cycles() -> u32 {
+    MIN_UNBLOCK_AFTER_CYCLES
+}
 
 /// Main client configuration structure.
 #[derive(Clone, Debug, Deserialize)]
@@ -46,11 +65,11 @@ pub struct Config {
     #[serde(default = "default_temp_blocking_enabled")]
     pub temp_blocking_enabled: bool,
 
-    /// Maximum consecutive timeout / missing errors before blocking a temperature sensor.
+    /// Maximum consecutive timeout / missing errors before blocking a temperature sensor (global).
     #[serde(default = "default_temp_max_timeout_errors")]
     pub temp_max_timeout_errors: u32,
 
-    /// Maximum consecutive sensor errors (0xFFFF) before blocking a temperature sensor.
+    /// Maximum consecutive sensor errors (0xFFFF) before blocking a temperature sensor (global).
     #[serde(default = "default_temp_max_sensor_errors")]
     pub temp_max_sensor_errors: u32,
 
@@ -162,20 +181,8 @@ pub struct Config {
     #[serde(default = "default_auto_read")]
     pub auto_read_troubles_memory: bool,
 
-    /// Whether automated background cyclic polling for temperature sensors is enabled.
-    /// Default: false.
-    #[serde(default = "default_polling_temperatures")]
-    pub polling_temperatures: bool,
-
-    /// List of zone IDs (1..256) configured as temperature probes to poll cyclically.
-    /// Requires `polling_temperatures: true`.
     #[serde(default)]
-    pub polling_temperatures_zones: Vec<u16>,
-
-    /// Interval (in minutes) between consecutive temperature polling cycles.
-    /// Minimum: 1 minute.
-    #[serde(default = "default_polling_temperatures_interval_minutes")]
-    pub polling_temperatures_interval_minutes: u64,
+    pub temperature_probes: Vec<TemperatureProbe>,
 
     /// Whether to emit temperature events (`ZoneTemperature`) on every read cycle,
     /// even if the measured value has not changed. Default: false.
@@ -239,6 +246,29 @@ impl Config {
                 ));
             }
         }
+        
+        let mut seen_zones = std::collections::HashSet::new();
+        for probe in &self.temperature_probes {
+            if probe.zone_id == 0 || probe.zone_id > 256 {
+                return Err(SatelError::InvalidConfig(format!(
+                    "invalid zone_id {} in temperature_probes (must be 1..=256)",
+                    probe.zone_id
+                )));
+            }
+            if !seen_zones.insert(probe.zone_id) {
+                return Err(SatelError::InvalidConfig(format!(
+                    "duplicate zone_id {} in temperature_probes",
+                    probe.zone_id
+                )));
+            }
+            if probe.unblock_enabled && probe.unblock_after_cycles < MIN_UNBLOCK_AFTER_CYCLES {
+                return Err(SatelError::InvalidConfig(format!(
+                    "unblock_after_cycles for zone {} is {}, minimum is {}",
+                    probe.zone_id, probe.unblock_after_cycles, MIN_UNBLOCK_AFTER_CYCLES
+                )));
+            }
+        }
+        
         Ok(())
     }
 
@@ -266,7 +296,7 @@ impl Config {
 
     /// Returns true if background temperature polling is configured and enabled.
     pub fn is_polling_enabled(&self) -> bool {
-        self.polling_temperatures && !self.polling_temperatures_zones.is_empty()
+        !self.temperature_probes.is_empty()
     }
 }
 
@@ -312,9 +342,7 @@ impl Default for Config {
             auto_read_outputs_state: default_auto_read(),
             auto_read_system_troubles: default_auto_read(),
             auto_read_troubles_memory: default_auto_read(),
-            polling_temperatures: default_polling_temperatures(),
-            polling_temperatures_zones: Vec::new(),
-            polling_temperatures_interval_minutes: default_polling_temperatures_interval_minutes(),
+            temperature_probes: Vec::new(),
             emit_unchanged_temperatures: default_emit_unchanged(),
             emit_unchanged_zones: default_emit_unchanged(),
             emit_unchanged_outputs: default_emit_unchanged(),
@@ -327,8 +355,6 @@ impl Default for Config {
 
 fn default_encryption() -> bool { false }
 fn default_emit_unchanged() -> bool { false }
-fn default_polling_temperatures() -> bool { false }
-fn default_polling_temperatures_interval_minutes() -> u64 { 1 }
 fn default_auto_read() -> bool { false }
 fn default_auto_reconnect() -> bool { true }
 fn default_temp_blocking_enabled() -> bool { true }

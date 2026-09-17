@@ -144,6 +144,7 @@ pub enum TemperatureSensorStatus {
     CommunicationError,     // Communication failure or 0xFFFF (during retries)
     BlockSensorMissing,     // Blocked in RAM after exceeding timeout threshold
     BlockCommunicationError,// Blocked in RAM after exceeding sensor error threshold
+    RetryRead,              // Po odblokowaniu, czeka na próbę odczytu
 }
 
 /// Zone temperature reading with retrieval timestamp.
@@ -279,6 +280,7 @@ pub struct Zone {
     pub temperature_sensor_errors_total: u32,
     pub temperature_timeout_errors_current: u32,
     pub temperature_sensor_errors_current: u32,
+    pub temperature_blocked_cycles: u32,
     pub tamper_state: bool,
     pub tamper_read_at: DateTime<Local>,
     pub alarm_state: bool,
@@ -313,6 +315,7 @@ impl Zone {
             temperature_sensor_errors_total: 0,
             temperature_timeout_errors_current: 0,
             temperature_sensor_errors_current: 0,
+            temperature_blocked_cycles: 0,
             tamper_state: false,
             tamper_read_at: now,
             alarm_state: false,

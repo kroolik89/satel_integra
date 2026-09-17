@@ -50,7 +50,7 @@ pub mod trouble_catalog;
 pub use client::SatelIntegra;
 pub use codec::SatelCodec;
 pub use command::{SatelCommand, SatelResult};
-pub use config::{Config, ConnectionConfig};
+pub use config::{Config, ConnectionConfig, TemperatureProbe, MIN_UNBLOCK_AFTER_CYCLES};
 pub use error::SatelError;
 pub use event::{SatelEvent, SyncCategory};
 pub use state::{

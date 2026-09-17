@@ -689,9 +689,8 @@ impl SatelIntegra {
                     zone.temperature_value = temp;
                     zone.temperature_read_at = Local::now();
 
-                    if zone.temperature_status == TemperatureSensorStatus::NoRead {
-                        zone.temperature_status = TemperatureSensorStatus::Ok;
-                    }
+                    zone.temperature_status = TemperatureSensorStatus::Ok;
+                    zone.temperature_blocked_cycles = 0;
 
                     if zone.temperature_timeout_errors_current > 0 {
                         zone.temperature_timeout_errors_current -= 1;
@@ -830,11 +829,32 @@ impl SatelIntegra {
             .map(|z| z.to_zone_temperature()))
     }
 
+    /// Resets the temperature sensor error counters and status.
+    pub fn reset_temperature_sensor(&self, zone_id: u16) -> Result<(), SatelError> {
+        if zone_id == 0 || zone_id > 256 {
+            return Err(SatelError::InvalidConfig(format!("Invalid zone id: {}", zone_id)));
+        }
+        let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+        let zone = state
+            .zones
+            .get_mut((zone_id.wrapping_sub(1) % 256) as usize)
+            .ok_or(SatelError::InvalidFrame)?;
+        
+        zone.temperature_status = TemperatureSensorStatus::NoRead;
+        zone.temperature_timeout_errors_current = 0;
+        zone.temperature_sensor_errors_current = 0;
+        zone.temperature_blocked_cycles = 0;
+        
+        Ok(())
+    }
+
     /// Queries the zone temperature with automatic error blocking for faulty probes.
     pub async fn get_zone_temperature_with_blocking(
         &self,
         zone_id: u16,
     ) -> Result<ZoneTemperature, SatelError> {
+        let limits = self.temp_limits(zone_id);
+
         let zone_info = {
             let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
             state
@@ -846,12 +866,29 @@ impl SatelIntegra {
         if let Some(info) = zone_info {
             let is_blocked = info.temperature_status == TemperatureSensorStatus::BlockSensorMissing
                 || info.temperature_status == TemperatureSensorStatus::BlockCommunicationError
-                || info.temperature_timeout_errors_current >= self.config.read().unwrap().temp_max_timeout_errors
-                || info.temperature_sensor_errors_current >= self.config.read().unwrap().temp_max_sensor_errors;
+                || info.temperature_timeout_errors_current >= limits.max_timeout_errors
+                || info.temperature_sensor_errors_current >= limits.max_sensor_errors;
 
             if is_blocked {
+                let new_cycles = info.temperature_blocked_cycles + 1;
+                
+                if limits.unblock_enabled && new_cycles >= limits.unblock_after_cycles {
+                    let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+                    if let Some(zone) = state.zones.get_mut((zone_id.wrapping_sub(1) % 256) as usize) {
+                        if zone.temperature_timeout_errors_current >= limits.max_timeout_errors {
+                            zone.temperature_timeout_errors_current = zone.temperature_timeout_errors_current.saturating_sub(1);
+                        }
+                        if zone.temperature_sensor_errors_current >= limits.max_sensor_errors {
+                            zone.temperature_sensor_errors_current = zone.temperature_sensor_errors_current.saturating_sub(1);
+                        }
+                        zone.temperature_status = TemperatureSensorStatus::RetryRead;
+                        zone.temperature_blocked_cycles = 0;
+                    }
+                    return Err(SatelError::TempTooManyErrors);
+                }
+
                 let status = if info.temperature_status == TemperatureSensorStatus::BlockSensorMissing
-                    || info.temperature_timeout_errors_current >= self.config.read().unwrap().temp_max_timeout_errors
+                    || info.temperature_timeout_errors_current >= limits.max_timeout_errors
                 {
                     TemperatureSensorStatus::BlockSensorMissing
                 } else {
@@ -862,6 +899,7 @@ impl SatelIntegra {
                     let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
                     if let Some(zone) = state.zones.get_mut((zone_id.wrapping_sub(1) % 256) as usize) {
                         zone.temperature_status = status;
+                        zone.temperature_blocked_cycles = new_cycles;
                     }
                 }
 

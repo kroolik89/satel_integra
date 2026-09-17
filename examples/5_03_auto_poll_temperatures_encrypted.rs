@@ -24,7 +24,7 @@
 //!   SATEL_CODE            - User access code (default: "1234")
 
 use chrono::Local;
-use satel_integra::{Config, ConnectionConfig, SatelEvent, SatelIntegra};
+use satel_integra::{Config, ConnectionConfig, SatelEvent, SatelIntegra, config::TemperatureProbe};
 use std::env;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -55,9 +55,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         user_code,
 
         // --- Background Temperature Polling Configuration ---
-        polling_temperatures: true,
-        polling_temperatures_zones: vec![21, 22, 23, 24],
-        polling_temperatures_interval_minutes: 1,
+        temperature_probes: vec![
+            TemperatureProbe {
+                zone_id: 21,
+                interval_minutes: 1,
+                max_timeout_errors: 3,
+                max_sensor_errors: 3,
+                unblock_enabled: true,
+                unblock_after_cycles: 10,
+            },
+            TemperatureProbe {
+                zone_id: 22,
+                interval_minutes: 1,
+                max_timeout_errors: 3,
+                max_sensor_errors: 3,
+                unblock_enabled: true,
+                unblock_after_cycles: 10,
+            },
+            TemperatureProbe {
+                zone_id: 23,
+                interval_minutes: 1,
+                max_timeout_errors: 3,
+                max_sensor_errors: 3,
+                unblock_enabled: true,
+                unblock_after_cycles: 10,
+            },
+            TemperatureProbe {
+                zone_id: 24,
+                interval_minutes: 1,
+                max_timeout_errors: 3,
+                max_sensor_errors: 3,
+                unblock_enabled: true,
+                unblock_after_cycles: 10,
+            },
+        ],
         emit_unchanged_temperatures: true,
 
         // --- Smart Queue Protection & Blocking Parameters ---
@@ -72,9 +103,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - Target:                {}:{}", host, port);
     println!("  - Encryption:            ENABLED (AES-192 ECB session)");
     println!("  - Integration Key:       {}", integration_key);
-    println!("  - Polling Temp Active:   {}", config.polling_temperatures);
-    println!("  - Polled Temp Zones:     {:?}", config.polling_temperatures_zones);
-    println!("  - Polling Interval:      {} min", config.polling_temperatures_interval_minutes);
+    println!("  - Polling Temp Active:   {}", config.is_polling_enabled());
+    println!("  - Temperature Probes:    {}", config.temperature_probes.len());
     println!("  - Smart Blocking:        {}", config.temp_blocking_enabled);
     println!("  - Runtime Duration:      10 minutes (600s)\n");
 

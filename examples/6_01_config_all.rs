@@ -1,4 +1,4 @@
-﻿//! Example 6_01: Complete reference guide showcasing all configuration fields in `Config`.
+//! Example 6_01: Complete reference guide showcasing all configuration fields in `Config`.
 //!
 //! ============================================================================
 //! 1. CONFIGURATION SYSTEM OVERVIEW & ARCHITECTURE:
@@ -79,7 +79,7 @@
 //!   SATEL_PORT - TCP port (default: 7094)
 //!   SATEL_CODE - User access code (default: "1234")
 
-use satel_integra::{Config, ConnectionConfig, SatelEvent, SatelIntegra};
+use satel_integra::{Config, ConnectionConfig, SatelEvent, SatelIntegra, config::TemperatureProbe};
 use std::env;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -265,15 +265,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // --------------------------------------------------------------------
         // 8. Background Periodic Polling (Wireless Temperature & Telemetry)
         // --------------------------------------------------------------------
-        // Explicitly enable background periodic temperature polling. Default: false.
-        polling_temperatures: true,
-
-        // List zone IDs (1..256) with temperature sensors to poll cyclically in background.
-        // Default: [] (empty — manual polling only).
-        polling_temperatures_zones: vec![21, 22, 23, 24],
-
-        // Interval in minutes between temperature polling cycles (min: 1). Default: 1.
-        polling_temperatures_interval_minutes: 1,
+        temperature_probes: vec![
+            TemperatureProbe {
+                zone_id: 21,
+                interval_minutes: 1,
+                max_timeout_errors: 3,
+                max_sensor_errors: 3,
+                unblock_enabled: true,
+                unblock_after_cycles: 10,
+            },
+            TemperatureProbe {
+                zone_id: 22,
+                interval_minutes: 1,
+                max_timeout_errors: 3,
+                max_sensor_errors: 3,
+                unblock_enabled: true,
+                unblock_after_cycles: 10,
+            },
+            TemperatureProbe {
+                zone_id: 23,
+                interval_minutes: 1,
+                max_timeout_errors: 3,
+                max_sensor_errors: 3,
+                unblock_enabled: true,
+                unblock_after_cycles: 10,
+            },
+            TemperatureProbe {
+                zone_id: 24,
+                interval_minutes: 1,
+                max_timeout_errors: 3,
+                max_sensor_errors: 3,
+                unblock_enabled: true,
+                unblock_after_cycles: 10,
+            },
+        ],
 
         // --------------------------------------------------------------------
         // 9. Event Emission & Deduplication Filtering (emit_unchanged_*)
@@ -306,9 +331,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - Temp Smart Blocking: {}", config.temp_blocking_enabled);
     println!("  - Violated Inversions: {:?}", config.io_violation_invert);
     println!("  - Auto-Push Enabled:   {}", config.is_auto_read_enabled());
-    println!("  - Polling Temp Active: {}", config.polling_temperatures);
-    println!("  - Polling Temp Zones:  {:?}", config.polling_temperatures_zones);
-    println!("  - Polling Interval:    {} min", config.polling_temperatures_interval_minutes);
+    println!("  - Polling Temp Active: {}", config.is_polling_enabled());
+    println!("  - Temperature Probes:  {}", config.temperature_probes.len());
     println!("  - Emit Unchanged Temp: {}", config.emit_unchanged_temperatures);
     println!("  - Emit Unchanged Zones:{}", config.emit_unchanged_zones);
     println!("  - Emit Unchanged Out:  {}\n", config.emit_unchanged_outputs);

@@ -1,4 +1,4 @@
-﻿//! Example 5_02: Automated cyclic background polling for wireless/wired temperatures.
+//! Example 5_02: Automated cyclic background polling for wireless/wired temperatures.
 //!
 //! ============================================================================
 //! 1. TEMPERATURE POLLING OVERVIEW & ARCHITECTURE:
@@ -42,7 +42,7 @@
 //!   SATEL_CODE - User access code (default: "1234")
 
 use chrono::Local;
-use satel_integra::{Config, ConnectionConfig, SatelEvent, SatelIntegra};
+use satel_integra::{Config, ConnectionConfig, SatelEvent, SatelIntegra, config::TemperatureProbe};
 use std::env;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -71,14 +71,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         user_code,
 
         // --- Background Temperature Polling Configuration ---
-        // Explicitly enable background temperature polling
-        polling_temperatures: true,
-
-        // List zone IDs where temperature probes are installed (e.g. ABAX wireless sensors)
-        polling_temperatures_zones: vec![21, 22, 23, 24],
-
-        // Polling interval in full minutes (minimum enforced: 1 minute)
-        polling_temperatures_interval_minutes: 1,
+        temperature_probes: vec![
+            TemperatureProbe {
+                zone_id: 21,
+                interval_minutes: 1,
+                max_timeout_errors: 3,
+                max_sensor_errors: 3,
+                unblock_enabled: true,
+                unblock_after_cycles: 10,
+            },
+            TemperatureProbe {
+                zone_id: 22,
+                interval_minutes: 1,
+                max_timeout_errors: 3,
+                max_sensor_errors: 3,
+                unblock_enabled: true,
+                unblock_after_cycles: 10,
+            },
+            TemperatureProbe {
+                zone_id: 23,
+                interval_minutes: 1,
+                max_timeout_errors: 3,
+                max_sensor_errors: 3,
+                unblock_enabled: true,
+                unblock_after_cycles: 10,
+            },
+            TemperatureProbe {
+                zone_id: 24,
+                interval_minutes: 1,
+                max_timeout_errors: 3,
+                max_sensor_errors: 3,
+                unblock_enabled: true,
+                unblock_after_cycles: 10,
+            },
+        ],
 
         // Emit temperature events on every polling cycle, even if unchanged
         emit_unchanged_temperatures: true,
@@ -97,9 +123,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Configuration:");
     println!("  - Target:                {}:{}", host, port);
-    println!("  - Polling Temp Active:   {}", config.polling_temperatures);
-    println!("  - Polled Temp Zones:     {:?}", config.polling_temperatures_zones);
-    println!("  - Polling Interval:      {} min", config.polling_temperatures_interval_minutes);
+    println!("  - Polling Temp Active:   {}", config.is_polling_enabled());
+    println!("  - Temperature Probes:    {}", config.temperature_probes.len());
     println!("  - Smart Blocking:        {}", config.temp_blocking_enabled);
     println!("  - Max Timeout Errors:    {}", config.temp_max_timeout_errors);
     println!("  - Max Sensor Errors:     {}", config.temp_max_sensor_errors);

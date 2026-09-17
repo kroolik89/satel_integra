@@ -42,6 +42,8 @@ pub enum SatelError {
     CanNotArm,
     #[error("Unknown panel result error (0xEF): {0}")]
     IntegraResultError(u8),
+    #[error("Invalid configuration: {0}")]
+    InvalidConfig(String),
     #[error("Invalid integration key: {0}")]
     InvalidIntegrationKey(String),
     #[error("Encryption error: {0}")]
