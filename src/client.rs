@@ -679,35 +679,17 @@ impl SatelIntegra {
         match response_result {
             Ok(response) => match process_zone_temperature(&response) {
                 Ok((id, temp)) => {
-                    let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
-                    let zone = state
-                        .zones
-                        .get_mut((id.wrapping_sub(1) % 256) as usize)
-                        .ok_or(SatelError::InvalidFrame)?;
-
-                    let old_temp = zone.temperature_value;
-                    zone.temperature_value = temp;
-                    zone.temperature_read_at = Local::now();
-
-                    zone.temperature_status = TemperatureSensorStatus::Ok;
-                    zone.temperature_blocked_cycles = 0;
-
-                    if zone.temperature_timeout_errors_current > 0 {
-                        zone.temperature_timeout_errors_current -= 1;
-                    }
-                    if zone.temperature_sensor_errors_current > 0 {
-                        zone.temperature_sensor_errors_current -= 1;
-                    }
+                    let old_temp = self.update_temperature_success_internal(id, temp)?;
 
                     if self.config.read().unwrap().emit_unchanged_temperatures || (old_temp - temp).abs() > 0.01 {
                         let _ = self.event_tx.send(SatelEvent::ZoneTemperatureChanged {
-                            id: zone.id,
+                            id,
                             temperature: temp,
                         });
                     }
 
                     tracing::info!("Retrieved zone #{} temperature: {}°C", id, temp);
-                    Ok(zone.to_zone_temperature())
+                    self.get_cached_zone_temperature(id)?.ok_or(SatelError::InvalidFrame)
                 }
                 Err(e) => {
                     self.update_temp_error(zone_id, &e)?;
@@ -846,6 +828,31 @@ impl SatelIntegra {
         zone.temperature_blocked_cycles = 0;
         
         Ok(())
+    }
+
+    /// Internal method to apply state updates after successful temperature read without network
+    pub fn update_temperature_success_internal(&self, id: u16, temp: f32) -> Result<f32, SatelError> {
+        let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+        let zone = state
+            .zones
+            .get_mut((id.wrapping_sub(1) % 256) as usize)
+            .ok_or(SatelError::InvalidFrame)?;
+
+        let old_temp = zone.temperature_value;
+        zone.temperature_value = temp;
+        zone.temperature_read_at = Local::now();
+
+        zone.temperature_status = TemperatureSensorStatus::Ok;
+        zone.temperature_blocked_cycles = 0;
+
+        if zone.temperature_timeout_errors_current > 0 {
+            zone.temperature_timeout_errors_current -= 1;
+        }
+        if zone.temperature_sensor_errors_current > 0 {
+            zone.temperature_sensor_errors_current -= 1;
+        }
+
+        Ok(old_temp)
     }
 
     /// Queries the zone temperature with automatic error blocking for faulty probes.
@@ -1556,5 +1563,207 @@ impl SatelIntegra {
             return Ok(c.clone());
         }
         Err(SatelError::InvalidUserCode)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, TemperatureProbe};
+    use crate::state::TemperatureSensorStatus;
+
+    #[tokio::test]
+    async fn test_temp_limits() {
+        let mut config = Config::default();
+        config.temp_max_timeout_errors = 5;
+        config.temp_max_sensor_errors = 3;
+        config.temperature_probes = vec![TemperatureProbe {
+            zone_id: 5,
+            max_timeout_errors: 10,
+            max_sensor_errors: 8,
+            interval_minutes: 1,
+            unblock_enabled: true,
+            unblock_after_cycles: 15,
+        }];
+        let client = SatelIntegra::new(config);
+        
+        // zone with custom limit
+        let limits5 = client.temp_limits(5);
+        assert_eq!(limits5.max_timeout_errors, 10);
+        assert_eq!(limits5.max_sensor_errors, 8);
+        assert_eq!(limits5.unblock_enabled, true);
+        assert_eq!(limits5.unblock_after_cycles, 15);
+
+        // zone without custom limit
+        let limits2 = client.temp_limits(2);
+        assert_eq!(limits2.max_timeout_errors, 5);
+        assert_eq!(limits2.max_sensor_errors, 3);
+        assert_eq!(limits2.unblock_enabled, false);
+    }
+
+    #[tokio::test]
+    async fn test_unblocking_logic() {
+        let mut config = Config::default();
+        config.temp_blocking_enabled = true;
+        config.temperature_probes = vec![TemperatureProbe {
+            zone_id: 5,
+            max_timeout_errors: 3,
+            max_sensor_errors: 10,
+            interval_minutes: 1,
+            unblock_enabled: true,
+            unblock_after_cycles: 10,
+        }];
+        let client = SatelIntegra::new(config);
+
+        // set state directly
+        {
+            let handle = client.state_handle();
+            let mut state = handle.write().unwrap();
+            let zone = state.zones.get_mut(4).unwrap();
+            zone.temperature_status = TemperatureSensorStatus::BlockSensorMissing;
+            zone.temperature_timeout_errors_current = 3;
+            zone.temperature_sensor_errors_current = 0;
+        }
+
+        // 9 calls
+        for i in 1..=9 {
+            let res = client.get_zone_temperature_with_blocking(5).await;
+            assert!(matches!(res, Err(SatelError::TempTooManyErrors)));
+            let handle = client.state_handle();
+            let state = handle.read().unwrap();
+            let zone = state.zones.get(4).unwrap();
+            assert_eq!(zone.temperature_status, TemperatureSensorStatus::BlockSensorMissing);
+            assert_eq!(zone.temperature_blocked_cycles, i);
+        }
+
+        // 10th call (unblock)
+        let res = client.get_zone_temperature_with_blocking(5).await;
+        assert!(matches!(res, Err(SatelError::TempTooManyErrors)));
+        {
+            let handle = client.state_handle();
+            let state = handle.read().unwrap();
+            let zone = state.zones.get(4).unwrap();
+            assert_eq!(zone.temperature_status, TemperatureSensorStatus::RetryRead);
+            assert_eq!(zone.temperature_blocked_cycles, 0);
+            assert_eq!(zone.temperature_timeout_errors_current, 2);
+            assert_eq!(zone.temperature_sensor_errors_current, 0);
+        }
+
+        // test with both counters at threshold
+        {
+            let handle = client.state_handle();
+            let mut state = handle.write().unwrap();
+            let zone = state.zones.get_mut(4).unwrap();
+            zone.temperature_status = TemperatureSensorStatus::BlockSensorMissing;
+            zone.temperature_timeout_errors_current = 3;
+            zone.temperature_sensor_errors_current = 10;
+            zone.temperature_blocked_cycles = 9;
+        }
+
+        let res = client.get_zone_temperature_with_blocking(5).await;
+        assert!(matches!(res, Err(SatelError::TempTooManyErrors)));
+        {
+            let handle = client.state_handle();
+            let state = handle.read().unwrap();
+            let zone = state.zones.get(4).unwrap();
+            assert_eq!(zone.temperature_status, TemperatureSensorStatus::RetryRead);
+            assert_eq!(zone.temperature_blocked_cycles, 0);
+            assert_eq!(zone.temperature_timeout_errors_current, 2);
+            assert_eq!(zone.temperature_sensor_errors_current, 9);
+        }
+
+        // test unblock_enabled = false
+        {
+            let mut config2 = Config::default();
+            config2.temp_blocking_enabled = true;
+            config2.temperature_probes = vec![TemperatureProbe {
+                zone_id: 6,
+                max_timeout_errors: 3,
+                max_sensor_errors: 10,
+                interval_minutes: 1,
+                unblock_enabled: false,
+                unblock_after_cycles: 10,
+            }];
+            let client2 = SatelIntegra::new(config2);
+            {
+                let handle = client2.state_handle();
+                let mut state = handle.write().unwrap();
+                let zone = state.zones.get_mut(5).unwrap();
+                zone.temperature_status = TemperatureSensorStatus::BlockSensorMissing;
+                zone.temperature_timeout_errors_current = 3;
+                zone.temperature_sensor_errors_current = 0;
+            }
+
+            for i in 1..=50 {
+                let res = client2.get_zone_temperature_with_blocking(6).await;
+                assert!(matches!(res, Err(SatelError::TempTooManyErrors)));
+                let handle = client2.state_handle();
+                let state = handle.read().unwrap();
+                let zone = state.zones.get(5).unwrap();
+                assert_eq!(zone.temperature_status, TemperatureSensorStatus::BlockSensorMissing);
+                assert_eq!(zone.temperature_blocked_cycles, i);
+                assert_eq!(zone.temperature_timeout_errors_current, 3);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_reset_temperature_sensor() {
+        let client = SatelIntegra::new(Config::default());
+        {
+            let handle = client.state_handle();
+            let mut state = handle.write().unwrap();
+            let zone = state.zones.get_mut(4).unwrap();
+            zone.temperature_status = TemperatureSensorStatus::BlockSensorMissing;
+            zone.temperature_timeout_errors_current = 5;
+            zone.temperature_timeout_errors_total = 10;
+            zone.temperature_sensor_errors_current = 2;
+            zone.temperature_sensor_errors_total = 2;
+            zone.temperature_blocked_cycles = 15;
+        }
+
+        client.reset_temperature_sensor(5).unwrap();
+
+        {
+            let handle = client.state_handle();
+            let state = handle.read().unwrap();
+            let zone = state.zones.get(4).unwrap();
+            assert_eq!(zone.temperature_status, TemperatureSensorStatus::NoRead);
+            assert_eq!(zone.temperature_timeout_errors_current, 0);
+            assert_eq!(zone.temperature_timeout_errors_total, 10);
+            assert_eq!(zone.temperature_sensor_errors_current, 0);
+            assert_eq!(zone.temperature_sensor_errors_total, 2);
+            assert_eq!(zone.temperature_blocked_cycles, 0);
+        }
+
+        let err = client.reset_temperature_sensor(0);
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_update_temperature_success_internal() {
+        let client = SatelIntegra::new(Config::default());
+        {
+            let handle = client.state_handle();
+            let mut state = handle.write().unwrap();
+            let zone = state.zones.get_mut(4).unwrap();
+            zone.temperature_status = TemperatureSensorStatus::RetryRead;
+            zone.temperature_timeout_errors_current = 2;
+            zone.temperature_sensor_errors_current = 1;
+            zone.temperature_blocked_cycles = 0;
+        }
+
+        let _ = client.update_temperature_success_internal(5, 22.5).unwrap();
+
+        {
+            let handle = client.state_handle();
+            let state = handle.read().unwrap();
+            let zone = state.zones.get(4).unwrap();
+            assert_eq!(zone.temperature_status, TemperatureSensorStatus::Ok);
+            assert_eq!(zone.temperature_timeout_errors_current, 1);
+            assert_eq!(zone.temperature_sensor_errors_current, 0);
+            assert_eq!(zone.temperature_blocked_cycles, 0);
+            assert_eq!(zone.temperature_value, 22.5);
+        }
     }
 }

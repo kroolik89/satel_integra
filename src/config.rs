@@ -473,4 +473,73 @@ mod tests {
         config.integration_key = Some("This key is too long but encryption is off".to_string());
         assert!(config.validate().is_ok());
     }
+
+    #[test]
+    fn test_validate_zone_id_0() {
+        let mut config = Config::default();
+        config.temperature_probes = vec![TemperatureProbe {
+            zone_id: 0,
+            max_timeout_errors: 3,
+            max_sensor_errors: 10,
+            interval_minutes: 1,
+            unblock_enabled: false,
+            unblock_after_cycles: 10,
+        }];
+        assert!(matches!(config.validate(), Err(SatelError::InvalidConfig(_))));
+    }
+
+    #[test]
+    fn test_validate_duplicate_zone_id() {
+        let mut config = Config::default();
+        config.temperature_probes = vec![
+            TemperatureProbe {
+                zone_id: 5,
+                max_timeout_errors: 3,
+                max_sensor_errors: 10,
+                interval_minutes: 1,
+                unblock_enabled: false,
+                unblock_after_cycles: 10,
+            },
+            TemperatureProbe {
+                zone_id: 5,
+                max_timeout_errors: 3,
+                max_sensor_errors: 10,
+                interval_minutes: 1,
+                unblock_enabled: false,
+                unblock_after_cycles: 10,
+            },
+        ];
+        assert!(matches!(config.validate(), Err(SatelError::InvalidConfig(_))));
+    }
+
+    #[test]
+    fn test_validate_unblock_cycles() {
+        let mut config = Config::default();
+        config.temperature_probes = vec![TemperatureProbe {
+            zone_id: 5,
+            max_timeout_errors: 3,
+            max_sensor_errors: 10,
+            interval_minutes: 1,
+            unblock_enabled: true,
+            unblock_after_cycles: 9,
+        }];
+        assert!(matches!(config.validate(), Err(SatelError::InvalidConfig(_))));
+
+        config.temperature_probes[0].unblock_after_cycles = 10;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_temperature_probe_deserialize_defaults() {
+        let toml_str = r#"
+            zone_id = 5
+            max_timeout_errors = 4
+            max_sensor_errors = 8
+            interval_minutes = 2
+        "#;
+        let probe: TemperatureProbe = toml::from_str(toml_str).unwrap();
+        assert_eq!(probe.zone_id, 5);
+        assert_eq!(probe.unblock_enabled, false);
+        assert_eq!(probe.unblock_after_cycles, 10);
+    }
 }

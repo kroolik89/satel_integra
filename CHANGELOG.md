@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-09-17
+
+### Added
+- `temperature_probes` configuration replacing `polling_temperatures*`.
+- `TemperatureProbe` struct for per-sensor configuration.
+- `reset_temperature_sensor` function in client.
+- Status `RetryRead` and automatic unblocking functionality with configurable thresholds (`unblock_enabled`, `unblock_after_cycles`).
+- Error `InvalidConfig` returned on invalid configuration validation.
+
+### Changed
+- Removed deprecated `polling_temperatures`, `polling_temperatures_zones`, `polling_temperatures_interval_minutes`, `temp_max_timeout_errors`, `temp_max_sensor_errors` from `Config`.
+
 ## [1.5.1] - 2026-09-16
 
 ### Fixed
