@@ -95,6 +95,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 SatelEvent::ConnectionChanged(state) => {
                     println!("[{}] [CONNECTION]        State -> {:?}", ts, state);
                 }
+                SatelEvent::ConnectionStatistics(stats) => {
+                    println!(
+                        "[{}] [STATISTICS]        Sent: {} B, Recv: {} B | Conn est: {}, Lost: {}, Err(crc:{}, to:{}, io:{})",
+                        ts, stats.bytes_sent, stats.bytes_received, stats.connections_established, stats.connections_lost, stats.crc_errors, stats.timeouts, stats.io_errors
+                    );
+                }
                 SatelEvent::IntegraVersionReceived(ver) => {
                     println!("[{}] [INTEGRA VERSION]   Model: {} | Firmware: {} | I/O: {}", ts, ver.model, ver.firmware_version, ver.io_count);
                 }

@@ -31,6 +31,7 @@
 // --- Internal modules (private) ---
 pub(crate) mod auto_requester;
 pub(crate) mod client_internal;
+pub(crate) mod counting_stream;
 pub(crate) mod encryption;
 pub(crate) mod polling_worker;
 pub(crate) mod worker;
@@ -57,10 +58,11 @@ pub use state::{
     AutoReadItemState, AutoReadItemStatus, AutoReadReport, ConnectionState, ConnectionStatistics,
     ConnectionStatus, ConnectionTelemetry, ConnectionType, EthmCapabilities, EthmPtsaTroubles,
     EthmVersion, GsmModuleTroubles, IntegraVersion, MainBoardTroubles, Output, OutputName,
-    Partition, PartitionName, SatelState, SatelStateHandle, SystemStatus, TemperatureSensorStatus,
-    TroubleType, TroublesData, TroublesPart1Data, TroublesPart2Data, TroublesPart3Data,
-    TroublesPart4Data, TroublesPart5Data, TroublesPart6Data, TroublesPart7Data, TroublesPart8Data,
-    Zone, ZoneName, ZoneStatus, ZoneTemperature,
+    Partition, PartitionName, SatelState, SatelStateHandle, StatsMark, SystemStatus,
+    TemperatureSensorStatus, TroubleType, TroublesData, TroublesPart1Data, TroublesPart2Data,
+    TroublesPart3Data, TroublesPart4Data, TroublesPart5Data, TroublesPart6Data, TroublesPart7Data,
+    TroublesPart8Data, Zone, ZoneName, ZoneStatus, ZoneTemperature, STATS_MIN_NON_PING_FRAMES,
+    statistics_changed,
 };
 pub use trouble_catalog::{TroubleAddress, TroubleAddressing, TroubleDescriptor, TroubleDomain};
 

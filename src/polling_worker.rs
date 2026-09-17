@@ -1,5 +1,6 @@
 use crate::client::SatelIntegra;
 use crate::config::TemperatureProbe;
+use crate::event::SatelEvent;
 use crate::state::ConnectionState;
 use futures::future::BoxFuture;
 use std::collections::HashMap;
@@ -156,11 +157,6 @@ impl SatelPollingWorker {
             self.tasks.len()
         );
 
-        if self.tasks.is_empty() {
-            tracing::info!("SatelPollingWorker: no tasks registered, stopping worker");
-            return;
-        }
-
         // Initial delay of 5 seconds post-connection to let handshake and auto-push stabilize
         let initial_delay = Duration::from_secs(5);
 
@@ -168,6 +164,8 @@ impl SatelPollingWorker {
             "SatelPollingWorker: waiting 5s post-connection before first polling cycle..."
         );
         sleep(initial_delay).await;
+
+        let mut last_stats_check = Instant::now();
 
         loop {
             // Check if connection is active
@@ -184,6 +182,29 @@ impl SatelPollingWorker {
                     if task.is_due(&self.integra) {
                         tracing::debug!("SatelPollingWorker: running task '{}'", task.name());
                         task.execute(&self.integra).await;
+                    }
+                }
+
+                if last_stats_check.elapsed() >= Duration::from_secs(30) {
+                    last_stats_check = Instant::now();
+                    let maybe_stats = {
+                        if let Ok(mut state) = self.integra.state_handle().write() {
+                            let current_mark = state.telemetry.stats_mark();
+                            if crate::state::statistics_changed(
+                                &state.telemetry.last_sent_stats_mark,
+                                &current_mark,
+                            ) {
+                                state.telemetry.last_sent_stats_mark = current_mark;
+                                Some(state.telemetry.statistics())
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(stats) = maybe_stats {
+                        let _ = self.integra.event_tx.send(SatelEvent::ConnectionStatistics(stats));
                     }
                 }
             } else {

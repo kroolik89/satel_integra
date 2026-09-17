@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::command::SatelResult;
 use crate::state::{
-    AutoReadReport, CmeSource, ConnectionState, EthmVersion, IntegraVersion, SystemStatus,
-    TemperatureSensorStatus, TroubleType,
+    AutoReadReport, CmeSource, ConnectionState, ConnectionStatistics, EthmVersion, IntegraVersion,
+    SystemStatus, TemperatureSensorStatus, TroubleType,
 };
 
 /// Category of panel elements being synchronized in batch.
@@ -36,6 +36,8 @@ impl std::fmt::Display for SyncCategory {
 pub enum SatelEvent {
     /// Connection state transition.
     ConnectionChanged(ConnectionState),
+    /// Connection telemetry and error statistics snapshot.
+    ConnectionStatistics(ConnectionStatistics),
     /// Zone violation state changed (0x00).
     ZoneViolation { id: u16, state: bool },
     /// Zone tamper state changed (0x01).

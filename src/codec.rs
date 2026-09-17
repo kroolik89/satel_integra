@@ -1,5 +1,7 @@
 use bytes::{Buf, BytesMut};
 use std::io;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio_util::codec::{Decoder, Encoder};
 
 /// Calculates the 16-bit CRC checksum for the Satel Integra protocol.
@@ -20,8 +22,25 @@ fn calculate_crc(data: &[u8]) -> u16 {
 /// Frame format: `0xFE 0xFE [cmd] [data...] [crc_high] [crc_low] 0xFE 0x0D`
 ///
 /// Any `0xFE` byte within the data payload is replaced with the `0xFE 0xF0` escape sequence (byte stuffing).
-#[derive(Default)]
-pub struct SatelCodec;
+#[derive(Clone, Debug)]
+pub struct SatelCodec {
+    pub crc_errors: Arc<AtomicU64>,
+}
+
+impl Default for SatelCodec {
+    fn default() -> Self {
+        Self {
+            crc_errors: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+impl SatelCodec {
+    /// Creates a new `SatelCodec` with the given CRC error tracking counter.
+    pub fn new(crc_errors: Arc<AtomicU64>) -> Self {
+        Self { crc_errors }
+    }
+}
 
 impl Decoder for SatelCodec {
     type Item = Vec<u8>;
@@ -67,6 +86,7 @@ impl Decoder for SatelCodec {
             if received_crc == calculate_crc(&data_with_crc) {
                 Ok(Some(data_with_crc))
             } else {
+                self.crc_errors.fetch_add(1, Ordering::Relaxed);
                 self.decode(src)
             }
         } else {
@@ -114,7 +134,7 @@ mod tests {
     #[test]
     fn test_encode_decode_roundtrip() {
         use bytes::BytesMut;
-        let mut codec = SatelCodec;
+        let mut codec = SatelCodec::default();
         let original = vec![0x7E, 0x01, 0x02];
         let mut buf = BytesMut::new();
         codec.encode(original.clone(), &mut buf).unwrap();
@@ -125,7 +145,7 @@ mod tests {
     #[test]
     fn test_byte_stuffing_encode() {
         use bytes::BytesMut;
-        let mut codec = SatelCodec;
+        let mut codec = SatelCodec::default();
         // Data containing 0xFE must be escaped to 0xFE 0xF0
         let data = vec![0xFE];
         let mut buf = BytesMut::new();
@@ -133,5 +153,34 @@ mod tests {
         // Verify 0xFE 0xF0 byte-stuffing sequence appears after header 0xFE 0xFE
         let buf_vec: Vec<u8> = buf.to_vec();
         assert!(buf_vec.windows(2).any(|w| w == [0xFE, 0xF0]));
+    }
+
+    #[test]
+    fn test_codec_crc_error_handling() {
+        use bytes::BytesMut;
+        let crc_errors = Arc::new(AtomicU64::new(0));
+        let mut codec = SatelCodec::new(crc_errors.clone());
+
+        // 1. Poprawna ramka -> crc_errors 0
+        let frame1 = vec![0x7E, 0x01];
+        let mut buf = BytesMut::new();
+        codec.encode(frame1.clone(), &mut buf).unwrap();
+        let decoded1 = codec.decode(&mut buf).unwrap();
+        assert_eq!(decoded1, Some(frame1));
+        assert_eq!(crc_errors.load(Ordering::Relaxed), 0);
+
+        // 2. Ramka ze złym CRC -> 1, a następna poprawna nadal zdekodowana
+        let mut corrupt_buf = BytesMut::new();
+        let frame_bad = vec![0x7E, 0x02];
+        codec.encode(frame_bad, &mut corrupt_buf).unwrap();
+        let corrupt_idx = corrupt_buf.len() - 3;
+        corrupt_buf[corrupt_idx] ^= 0xFF;
+
+        let frame2 = vec![0x7E, 0x03];
+        codec.encode(frame2.clone(), &mut corrupt_buf).unwrap();
+
+        let decoded2 = codec.decode(&mut corrupt_buf).unwrap();
+        assert_eq!(crc_errors.load(Ordering::Relaxed), 1);
+        assert_eq!(decoded2, Some(frame2));
     }
 }

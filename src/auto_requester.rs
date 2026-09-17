@@ -35,6 +35,15 @@ impl SatelAutoRequester {
                             StateWorkerMessage::StatusChanged(state) => {
                                 tracing::info!("SatelAutoRequester: Connection state transition -> {:?}", state);
                                 let _ = self.integra.event_tx.send(SatelEvent::ConnectionChanged(state));
+                                let stats = if let Ok(mut s) = self.integra.state.write() {
+                                    s.telemetry.last_sent_stats_mark = s.telemetry.stats_mark();
+                                    Some(s.telemetry.statistics())
+                                } else {
+                                    None
+                                };
+                                if let Some(stats) = stats {
+                                    let _ = self.integra.event_tx.send(SatelEvent::ConnectionStatistics(stats));
+                                }
                             }
                             StateWorkerMessage::IntegraVersion(v) => {
                                 let _ = self.integra.update_integra_version_internal(v);

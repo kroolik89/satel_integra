@@ -59,6 +59,35 @@ pub struct ConnectionStatistics {
     pub taken_at: DateTime<Local>,
 }
 
+/// Threshold of non-ping frames required to trigger a periodic statistics event.
+pub const STATS_MIN_NON_PING_FRAMES: u64 = 5;
+
+/// Connection telemetry state mark used to decide whether periodic statistics should be emitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StatsMark {
+    pub non_ping_frames: u64,
+    pub connections_established: u64,
+    pub reconnect_attempts: u64,
+    pub connections_lost: u64,
+    pub timeouts: u64,
+    pub crc_errors: u64,
+    pub rejected_by_panel: u64,
+    pub io_errors: u64,
+}
+
+/// Evaluates whether connection statistics have meaningfully changed between two marks.
+/// Returns true if non-ping frames increased by at least 5 or any other connection/error counter changed.
+pub fn statistics_changed(prev: &StatsMark, now: &StatsMark) -> bool {
+    now.non_ping_frames.saturating_sub(prev.non_ping_frames) >= STATS_MIN_NON_PING_FRAMES
+        || prev.connections_established != now.connections_established
+        || prev.reconnect_attempts != now.reconnect_attempts
+        || prev.connections_lost != now.connections_lost
+        || prev.timeouts != now.timeouts
+        || prev.crc_errors != now.crc_errors
+        || prev.rejected_by_panel != now.rejected_by_panel
+        || prev.io_errors != now.io_errors
+}
+
 /// Data transmission telemetry and connection health counters.
 #[derive(Debug, Clone)]
 pub struct ConnectionTelemetry {
@@ -77,6 +106,7 @@ pub struct ConnectionTelemetry {
     pub non_ping_frames: Arc<AtomicU64>,
     pub connected_since: Option<DateTime<Local>>,
     pub total_connected_before: Duration,
+    pub last_sent_stats_mark: StatsMark,
 }
 
 impl Default for ConnectionTelemetry {
@@ -97,6 +127,7 @@ impl Default for ConnectionTelemetry {
             non_ping_frames: Arc::new(AtomicU64::new(0)),
             connected_since: None,
             total_connected_before: Duration::ZERO,
+            last_sent_stats_mark: StatsMark::default(),
         }
     }
 }
@@ -104,6 +135,19 @@ impl Default for ConnectionTelemetry {
 impl ConnectionTelemetry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn stats_mark(&self) -> StatsMark {
+        StatsMark {
+            non_ping_frames: self.non_ping_frames.load(Ordering::Relaxed),
+            connections_established: self.connections_established.load(Ordering::Relaxed),
+            reconnect_attempts: self.reconnect_attempts.load(Ordering::Relaxed),
+            connections_lost: self.connections_lost.load(Ordering::Relaxed),
+            timeouts: self.timeouts.load(Ordering::Relaxed),
+            crc_errors: self.crc_errors.load(Ordering::Relaxed),
+            rejected_by_panel: self.rejected_by_panel.load(Ordering::Relaxed),
+            io_errors: self.io_errors.load(Ordering::Relaxed),
+        }
     }
 
     pub fn reset(&mut self) {
@@ -118,6 +162,7 @@ impl ConnectionTelemetry {
         self.io_errors.store(0, Ordering::Relaxed);
         self.non_ping_frames.store(0, Ordering::Relaxed);
         self.total_connected_before = Duration::ZERO;
+        self.last_sent_stats_mark = StatsMark::default();
         if self.status.state == ConnectionState::Connected {
             self.connected_since = Some(Local::now());
         } else {
@@ -1077,3 +1122,40 @@ impl SatelState {
 
 /// Thread-safe shared handle to `SatelState`.
 pub type SatelStateHandle = Arc<RwLock<SatelState>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_statistics_changed_logic() {
+        let base = StatsMark {
+            non_ping_frames: 10,
+            connections_established: 1,
+            reconnect_attempts: 0,
+            connections_lost: 0,
+            timeouts: 0,
+            crc_errors: 0,
+            rejected_by_panel: 0,
+            io_errors: 0,
+        };
+
+        // 1. Brak zmian -> false
+        assert!(!statistics_changed(&base, &base));
+
+        // 2. +4 ramki -> false
+        let mut mark_plus_4 = base;
+        mark_plus_4.non_ping_frames = 14;
+        assert!(!statistics_changed(&base, &mark_plus_4));
+
+        // 3. +5 ramek -> true
+        let mut mark_plus_5 = base;
+        mark_plus_5.non_ping_frames = 15;
+        assert!(statistics_changed(&base, &mark_plus_5));
+
+        // 4. Zmiana timeouts przy 0 ramkach -> true
+        let mut mark_timeout = base;
+        mark_timeout.timeouts = 1;
+        assert!(statistics_changed(&base, &mark_timeout));
+    }
+}

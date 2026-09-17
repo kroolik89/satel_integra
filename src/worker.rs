@@ -1,6 +1,7 @@
 use crate::codec::SatelCodec;
 use crate::command::SatelCommand;
 use crate::config::{Config, ConnectionConfig};
+use crate::counting_stream::CountingStream;
 use crate::error::SatelError;
 use crate::parsers::{process_auto_read_response, process_ethm_version, process_integra_version};
 use crate::state::{ConnectionState, ConnectionType, SatelStateHandle};
@@ -121,7 +122,7 @@ impl SatelCommunicationWorker {
                     // 2. Ping keep-alive
                     if current_state == ConnectionState::Connected && last_send.elapsed() >= Duration::from_secs(2) {
                         let cmd = vec![SatelCommand::IntegraVersion.to_byte()];
-                        let _ = self.satel_connection_worker_exchange(cmd, 0x7E, Duration::from_millis(500), Duration::from_millis(500)).await;
+                        let _ = self.satel_connection_worker_exchange(cmd, 0x7E, Duration::from_millis(500), Duration::from_millis(500), true).await;
                     }
 
                     // 3. Automatic reconnect with exponential backoff
@@ -162,7 +163,7 @@ impl SatelCommunicationWorker {
                 }
                 let cmd_byte = data.first().cloned().unwrap_or(0);
                 let result = self
-                    .satel_connection_worker_exchange(data, cmd_byte, write_timeout, read_timeout)
+                    .satel_connection_worker_exchange(data, cmd_byte, write_timeout, read_timeout, false)
                     .await;
                 let _ = response_tx.send(result);
             }
@@ -179,7 +180,7 @@ impl SatelCommunicationWorker {
                 }
                 let cmd_byte = data.first().cloned().unwrap_or(0);
                 let result = self
-                    .satel_connection_worker_exchange(data, cmd_byte, write_timeout, read_timeout)
+                    .satel_connection_worker_exchange(data, cmd_byte, write_timeout, read_timeout, false)
                     .await;
                 let _ = response_tx.send(result);
             }
@@ -213,6 +214,7 @@ impl SatelCommunicationWorker {
         expected_cmd: u8,
         write_timeout: Duration,
         read_timeout: Duration,
+        is_ping: bool,
     ) -> Result<Vec<u8>, SatelError> {
         let stream = self.stream.as_mut().ok_or(SatelError::NotConnected)?;
 
@@ -220,7 +222,9 @@ impl SatelCommunicationWorker {
         match timeout(write_timeout, stream.send(data.clone())).await {
             Ok(Ok(_)) => {
                 let mut s = self.state.write().unwrap();
-                s.telemetry.bytes_sent.fetch_add(data.len() as u64, Ordering::Relaxed);
+                if !is_ping {
+                    s.telemetry.non_ping_frames.fetch_add(1, Ordering::Relaxed);
+                }
                 s.telemetry.last_send_at = Instant::now();
             }
             Ok(Err(e)) => {
@@ -241,10 +245,6 @@ impl SatelCommunicationWorker {
             let stream = self.stream.as_mut().unwrap();
             match timeout(remaining, stream.next()).await {
                 Ok(Some(Ok(frame))) => {
-                    {
-                        let s = self.state.read().unwrap();
-                        s.telemetry.bytes_received.fetch_add(frame.len() as u64, Ordering::Relaxed);
-                    }
                     if frame.is_empty() {
                         continue;
                     }
@@ -254,6 +254,11 @@ impl SatelCommunicationWorker {
 
                     if is_result_code && !is_accepted {
                         self.state.read().unwrap().telemetry.rejected_by_panel.fetch_add(1, Ordering::Relaxed);
+                    }
+
+                    let is_target_response = frame[0] == expected_cmd || frame[0] == 0xEF;
+                    if !is_ping || !is_target_response {
+                        self.state.read().unwrap().telemetry.non_ping_frames.fetch_add(1, Ordering::Relaxed);
                     }
 
                     if (frame[0] != expected_cmd || is_result_code) && !is_accepted {
@@ -375,7 +380,11 @@ impl SatelCommunicationWorker {
             }
         };
 
-        self.stream = Some(Framed::new(stream, SatelCodec));
+        let crc_errors = {
+            let s = self.state.read().unwrap();
+            s.telemetry.crc_errors.clone()
+        };
+        self.stream = Some(Framed::new(stream, SatelCodec::new(crc_errors)));
         self.set_state_handshake().await;
 
         sleep(Duration::from_millis(200)).await;
@@ -402,6 +411,13 @@ impl SatelCommunicationWorker {
         let connection_config = self.config.read().unwrap().connection.clone();
         let encryption = self.config.read().unwrap().encryption;
         let integration_key = self.config.read().unwrap().integration_key.clone();
+        let (bytes_sent, bytes_received) = {
+            let s = self.state.read().unwrap();
+            (
+                s.telemetry.bytes_sent.clone(),
+                s.telemetry.bytes_received.clone(),
+            )
+        };
 
         let stream_result = timeout(conn_timeout, async move {
             match connection_config {
@@ -409,6 +425,7 @@ impl SatelCommunicationWorker {
                     let stream = TcpStream::connect((host.as_str(), port))
                         .await
                         .map_err(SatelError::from)?;
+                    let counted = CountingStream::new(stream, bytes_sent, bytes_received);
                     let boxed: Box<dyn AsyncReadWrite> = if encryption {
                         let key_str = integration_key.as_deref().ok_or_else(|| {
                             SatelError::InvalidIntegrationKey(
@@ -417,10 +434,10 @@ impl SatelCommunicationWorker {
                         })?;
                         let aes_key = crate::encryption::derive_aes_key(key_str);
                         tracing::info!("TCP connection established with AES-192 encryption");
-                        Box::new(crate::encryption::EncryptedStream::new(stream, aes_key))
+                        Box::new(crate::encryption::EncryptedStream::new(counted, aes_key))
                     } else {
                         tracing::info!("TCP connection established (plaintext)");
-                        Box::new(stream)
+                        Box::new(counted)
                     };
                     Ok::<Box<dyn AsyncReadWrite>, SatelError>(boxed)
                 }
@@ -428,7 +445,8 @@ impl SatelCommunicationWorker {
                     let stream = tokio_serial::new(path, baud_rate)
                         .open_native_async()
                         .map_err(SatelError::from)?;
-                    let boxed: Box<dyn AsyncReadWrite> = Box::new(stream);
+                    let counted = CountingStream::new(stream, bytes_sent, bytes_received);
+                    let boxed: Box<dyn AsyncReadWrite> = Box::new(counted);
                     Ok::<Box<dyn AsyncReadWrite>, SatelError>(boxed)
                 }
             }
@@ -449,7 +467,7 @@ impl SatelCommunicationWorker {
         // 2a. Query ETHM/INT-RS module version
         let cmd_ethm = vec![SatelCommand::ModuleVersion.to_byte()];
         match self
-            .satel_connection_worker_exchange(cmd_ethm, 0x7C, conn_timeout, conn_timeout)
+            .satel_connection_worker_exchange(cmd_ethm, 0x7C, conn_timeout, conn_timeout, false)
             .await
         {
             Ok(response) => {
@@ -466,7 +484,7 @@ impl SatelCommunicationWorker {
         // 2b. Query Integra panel version
         let cmd_integra = vec![SatelCommand::IntegraVersion.to_byte()];
         match self
-            .satel_connection_worker_exchange(cmd_integra, 0x7E, conn_timeout, conn_timeout)
+            .satel_connection_worker_exchange(cmd_integra, 0x7E, conn_timeout, conn_timeout, false)
             .await
         {
             Ok(response) => {
@@ -504,7 +522,7 @@ impl SatelCommunicationWorker {
         auto_push_data.extend_from_slice(&mask);
 
         match self
-            .satel_connection_worker_exchange(auto_push_data, 0x7F, conn_timeout, conn_timeout)
+            .satel_connection_worker_exchange(auto_push_data, 0x7F, conn_timeout, conn_timeout, false)
             .await
         {
             Ok(response) => {
@@ -602,7 +620,7 @@ impl SatelCommunicationWorker {
             Ok(Some(Ok(frame))) => {
                 {
                     let s = state.read().map_err(|_| SatelError::StatePoisoned)?;
-                    s.telemetry.bytes_received.fetch_add(frame.len() as u64, Ordering::Relaxed);
+                    s.telemetry.non_ping_frames.fetch_add(1, Ordering::Relaxed);
                 }
 
                 let is_accepted = frame[0] == 0xEF && frame.get(1) == Some(&0xFF);

@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-09-17
+
+### Added
+- `ConnectionStatistics` snapshot model and `StatsMark` change detection struct (`STATS_MIN_NON_PING_FRAMES = 5`, `statistics_changed()`).
+- `SatelIntegra::statistics()` and `SatelIntegra::reset_statistics()`.
+- `SatelEvent::ConnectionStatistics(ConnectionStatistics)` emitted immediately after `ConnectionChanged` and periodically every 30 seconds when connected if non-ping frames increased by >= 5 or any error/connection counter changed.
+- `CountingStream` (`AsyncRead` + `AsyncWrite`) wrapping physical transport for raw wire byte counting (`bytes_sent`, `bytes_received`) before encryption.
+- CRC error tracking in `SatelCodec` incrementing `crc_errors` counter on checksum mismatch.
+
+### Changed
+- **Breaking**: Telemetry counters migrated to `Arc<AtomicU64>` in `ConnectionTelemetry`.
+- **Breaking**: `reconnect_count` renamed to `reconnect_attempts`.
+- **Breaking**: `bytes_sent` and `bytes_received` now count actual physical wire bytes (including frame envelope, stuffing, and encryption overhead) via `CountingStream` instead of payload lengths.
+- **Breaking**: `disconnect()` does not reset connection statistics (statistics persist across disconnections until explicit `reset_statistics()`).
+- Added internal `non_ping_frames` counter tracking frames exchanged outside periodic keep-alive pings.
+
 ## [1.6.0] - 2026-09-17
 
 ### Added
