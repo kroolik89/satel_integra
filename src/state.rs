@@ -1,7 +1,7 @@
 use chrono::{DateTime, Local};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 // --- Connection ---
 
@@ -41,15 +41,42 @@ pub enum ConnectionType {
     Uart(String),
 }
 
+/// Public snapshot of connection statistics and telemetry counters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionStatistics {
+    pub state: ConnectionState,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub connections_established: u64,
+    pub reconnect_attempts: u64,
+    pub connections_lost: u64,
+    pub timeouts: u64,
+    pub crc_errors: u64,
+    pub rejected_by_panel: u64,
+    pub io_errors: u64,
+    pub connected_since: Option<DateTime<Local>>,
+    pub total_connected: Duration,
+    pub taken_at: DateTime<Local>,
+}
+
 /// Data transmission telemetry and connection health counters.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ConnectionTelemetry {
     pub status: ConnectionStatus,
     pub last_connected_at: Option<SystemTime>,
     pub last_send_at: Instant,
-    pub bytes_sent: AtomicUsize,
-    pub bytes_received: AtomicUsize,
-    pub reconnect_count: AtomicUsize,
+    pub bytes_sent: Arc<AtomicU64>,
+    pub bytes_received: Arc<AtomicU64>,
+    pub connections_established: Arc<AtomicU64>,
+    pub reconnect_attempts: Arc<AtomicU64>,
+    pub connections_lost: Arc<AtomicU64>,
+    pub timeouts: Arc<AtomicU64>,
+    pub crc_errors: Arc<AtomicU64>,
+    pub rejected_by_panel: Arc<AtomicU64>,
+    pub io_errors: Arc<AtomicU64>,
+    pub non_ping_frames: Arc<AtomicU64>,
+    pub connected_since: Option<DateTime<Local>>,
+    pub total_connected_before: Duration,
 }
 
 impl Default for ConnectionTelemetry {
@@ -58,9 +85,18 @@ impl Default for ConnectionTelemetry {
             status: ConnectionStatus::default(),
             last_connected_at: None,
             last_send_at: Instant::now(),
-            bytes_sent: AtomicUsize::new(0),
-            bytes_received: AtomicUsize::new(0),
-            reconnect_count: AtomicUsize::new(0),
+            bytes_sent: Arc::new(AtomicU64::new(0)),
+            bytes_received: Arc::new(AtomicU64::new(0)),
+            connections_established: Arc::new(AtomicU64::new(0)),
+            reconnect_attempts: Arc::new(AtomicU64::new(0)),
+            connections_lost: Arc::new(AtomicU64::new(0)),
+            timeouts: Arc::new(AtomicU64::new(0)),
+            crc_errors: Arc::new(AtomicU64::new(0)),
+            rejected_by_panel: Arc::new(AtomicU64::new(0)),
+            io_errors: Arc::new(AtomicU64::new(0)),
+            non_ping_frames: Arc::new(AtomicU64::new(0)),
+            connected_since: None,
+            total_connected_before: Duration::ZERO,
         }
     }
 }
@@ -70,10 +106,56 @@ impl ConnectionTelemetry {
         Self::default()
     }
 
-    pub fn reset(&self) {
+    pub fn reset(&mut self) {
         self.bytes_sent.store(0, Ordering::Relaxed);
         self.bytes_received.store(0, Ordering::Relaxed);
-        self.reconnect_count.store(0, Ordering::Relaxed);
+        self.connections_established.store(0, Ordering::Relaxed);
+        self.reconnect_attempts.store(0, Ordering::Relaxed);
+        self.connections_lost.store(0, Ordering::Relaxed);
+        self.timeouts.store(0, Ordering::Relaxed);
+        self.crc_errors.store(0, Ordering::Relaxed);
+        self.rejected_by_panel.store(0, Ordering::Relaxed);
+        self.io_errors.store(0, Ordering::Relaxed);
+        self.non_ping_frames.store(0, Ordering::Relaxed);
+        self.total_connected_before = Duration::ZERO;
+        if self.status.state == ConnectionState::Connected {
+            self.connected_since = Some(Local::now());
+        } else {
+            self.connected_since = None;
+        }
+    }
+
+    pub fn statistics(&self) -> ConnectionStatistics {
+        let taken_at = Local::now();
+        let current_session = if self.status.state == ConnectionState::Connected {
+            self.connected_since
+                .map(|since| (taken_at - since).to_std().unwrap_or(Duration::ZERO))
+                .unwrap_or(Duration::ZERO)
+        } else {
+            Duration::ZERO
+        };
+        let total_connected = self.total_connected_before.saturating_add(current_session);
+        let connected_since = if self.status.state == ConnectionState::Connected {
+            self.connected_since
+        } else {
+            None
+        };
+
+        ConnectionStatistics {
+            state: self.status.state,
+            bytes_sent: self.bytes_sent.load(Ordering::Relaxed),
+            bytes_received: self.bytes_received.load(Ordering::Relaxed),
+            connections_established: self.connections_established.load(Ordering::Relaxed),
+            reconnect_attempts: self.reconnect_attempts.load(Ordering::Relaxed),
+            connections_lost: self.connections_lost.load(Ordering::Relaxed),
+            timeouts: self.timeouts.load(Ordering::Relaxed),
+            crc_errors: self.crc_errors.load(Ordering::Relaxed),
+            rejected_by_panel: self.rejected_by_panel.load(Ordering::Relaxed),
+            io_errors: self.io_errors.load(Ordering::Relaxed),
+            connected_since,
+            total_connected,
+            taken_at,
+        }
     }
 }
 

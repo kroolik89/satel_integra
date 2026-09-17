@@ -54,13 +54,13 @@ pub use config::{Config, ConnectionConfig, TemperatureProbe, MIN_UNBLOCK_AFTER_C
 pub use error::SatelError;
 pub use event::{SatelEvent, SyncCategory};
 pub use state::{
-    AutoReadItemState, AutoReadItemStatus, AutoReadReport, ConnectionState, ConnectionStatus,
-    ConnectionTelemetry, ConnectionType, EthmCapabilities, EthmPtsaTroubles, EthmVersion,
-    GsmModuleTroubles, IntegraVersion, MainBoardTroubles, Output, OutputName, Partition,
-    PartitionName, SatelState, SatelStateHandle, SystemStatus, TemperatureSensorStatus, TroubleType,
-    TroublesData, TroublesPart1Data, TroublesPart2Data, TroublesPart3Data, TroublesPart4Data,
-    TroublesPart5Data, TroublesPart6Data, TroublesPart7Data, TroublesPart8Data, Zone, ZoneName,
-    ZoneStatus, ZoneTemperature,
+    AutoReadItemState, AutoReadItemStatus, AutoReadReport, ConnectionState, ConnectionStatistics,
+    ConnectionStatus, ConnectionTelemetry, ConnectionType, EthmCapabilities, EthmPtsaTroubles,
+    EthmVersion, GsmModuleTroubles, IntegraVersion, MainBoardTroubles, Output, OutputName,
+    Partition, PartitionName, SatelState, SatelStateHandle, SystemStatus, TemperatureSensorStatus,
+    TroubleType, TroublesData, TroublesPart1Data, TroublesPart2Data, TroublesPart3Data,
+    TroublesPart4Data, TroublesPart5Data, TroublesPart6Data, TroublesPart7Data, TroublesPart8Data,
+    Zone, ZoneName, ZoneStatus, ZoneTemperature,
 };
 pub use trouble_catalog::{TroubleAddress, TroubleAddressing, TroubleDescriptor, TroubleDomain};
 

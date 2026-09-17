@@ -23,7 +23,7 @@ use crate::parsers::{
 };
 use crate::polling_worker::{SatelPollingWorker, TemperaturePollingTask};
 use crate::state::{
-    AutoReadReport, EthmVersion, IntegraVersion, OutputName, PartitionName, SatelState, SatelStateHandle,
+    AutoReadReport, ConnectionStatistics, EthmVersion, IntegraVersion, OutputName, PartitionName, SatelState, SatelStateHandle,
     SystemStatus, TemperatureSensorStatus, TroublesData, TroublesPart1Data, TroublesPart2Data,
     TroublesPart3Data, TroublesPart4Data, TroublesPart5Data, TroublesPart6Data, TroublesPart7Data,
     TroublesPart8Data, TroublesMemoryPart2Data, TroublesMemoryPart3Data, TroublesMemoryPart5Data,
@@ -185,6 +185,18 @@ impl SatelIntegra {
     /// Returns a thread-safe shared handle to the in-memory cache.
     pub fn state_handle(&self) -> SatelStateHandle {
         self.state.clone()
+    }
+
+    /// Returns a snapshot of connection statistics and telemetry counters.
+    pub fn statistics(&self) -> ConnectionStatistics {
+        let guard = self.state.read().unwrap();
+        guard.telemetry.statistics()
+    }
+
+    /// Resets connection statistics and telemetry counters.
+    pub fn reset_statistics(&self) {
+        let mut guard = self.state.write().unwrap();
+        guard.telemetry.reset();
     }
 
     /// Subscribes to the live event broadcast stream.
@@ -1765,5 +1777,61 @@ mod tests {
             assert_eq!(zone.temperature_blocked_cycles, 0);
             assert_eq!(zone.temperature_value, 22.5);
         }
+    }
+
+    #[tokio::test]
+    async fn test_reset_statistics() {
+        let client = SatelIntegra::new(Config::default());
+        {
+            let handle = client.state_handle();
+            let mut s = handle.write().unwrap();
+            s.telemetry.bytes_sent.store(100, std::sync::atomic::Ordering::Relaxed);
+            s.telemetry.bytes_received.store(200, std::sync::atomic::Ordering::Relaxed);
+            s.telemetry.connections_established.store(2, std::sync::atomic::Ordering::Relaxed);
+            s.telemetry.reconnect_attempts.store(3, std::sync::atomic::Ordering::Relaxed);
+            s.telemetry.connections_lost.store(1, std::sync::atomic::Ordering::Relaxed);
+            s.telemetry.timeouts.store(4, std::sync::atomic::Ordering::Relaxed);
+            s.telemetry.crc_errors.store(5, std::sync::atomic::Ordering::Relaxed);
+            s.telemetry.rejected_by_panel.store(6, std::sync::atomic::Ordering::Relaxed);
+            s.telemetry.io_errors.store(7, std::sync::atomic::Ordering::Relaxed);
+            s.telemetry.total_connected_before = std::time::Duration::from_secs(300);
+        }
+
+        client.reset_statistics();
+
+        let stats = client.statistics();
+        assert_eq!(stats.bytes_sent, 0);
+        assert_eq!(stats.bytes_received, 0);
+        assert_eq!(stats.connections_established, 0);
+        assert_eq!(stats.reconnect_attempts, 0);
+        assert_eq!(stats.connections_lost, 0);
+        assert_eq!(stats.timeouts, 0);
+        assert_eq!(stats.crc_errors, 0);
+        assert_eq!(stats.rejected_by_panel, 0);
+        assert_eq!(stats.io_errors, 0);
+        assert_eq!(stats.total_connected, std::time::Duration::ZERO);
+        assert_eq!(stats.connected_since, None);
+    }
+
+    #[tokio::test]
+    async fn test_total_connected_sums_closed_and_current_session() {
+        let client = SatelIntegra::new(Config::default());
+        {
+            let handle = client.state_handle();
+            let mut s = handle.write().unwrap();
+            s.telemetry.status.state = crate::state::ConnectionState::Connected;
+            s.telemetry.total_connected_before = std::time::Duration::from_secs(60);
+            s.telemetry.connected_since = Some(chrono::Local::now() - chrono::Duration::seconds(10));
+        }
+
+        let stats = client.statistics();
+        assert_eq!(stats.state, crate::state::ConnectionState::Connected);
+        assert!(stats.connected_since.is_some());
+        assert!(
+            stats.total_connected >= std::time::Duration::from_secs(69)
+                && stats.total_connected <= std::time::Duration::from_secs(75),
+            "Expected total_connected around 70s, got {:?}",
+            stats.total_connected
+        );
     }
 }

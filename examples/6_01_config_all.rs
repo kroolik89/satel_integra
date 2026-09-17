@@ -365,13 +365,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Display Connection Telemetry
     {
-        let handle = satel.state_handle();
-        let state = handle.read().unwrap();
+        let stats = satel.statistics();
         println!("Connection Telemetry Summary:");
-        println!("  - Current State:    {:?}", state.telemetry.status.state);
-        println!("  - Bytes Sent:       {}", state.telemetry.bytes_sent.load(std::sync::atomic::Ordering::Relaxed));
-        println!("  - Bytes Received:   {}", state.telemetry.bytes_received.load(std::sync::atomic::Ordering::Relaxed));
-        println!("  - Failed Attempts:  {}", state.telemetry.status.failed_attempts);
+        println!("  - Current State:    {:?}", stats.state);
+        println!("  - Bytes Sent:       {}", stats.bytes_sent);
+        println!("  - Bytes Received:   {}", stats.bytes_received);
+        println!("  - Connections Est:  {}", stats.connections_established);
+        println!("  - Reconnect Att:    {}", stats.reconnect_attempts);
+        println!("  - Connections Lost: {}", stats.connections_lost);
+        println!("  - Timeouts:         {}", stats.timeouts);
+        println!("  - CRC Errors:       {}", stats.crc_errors);
+        println!("  - Rejected By Panel:{}", stats.rejected_by_panel);
+        println!("  - IO Errors:        {}", stats.io_errors);
+        println!("  - Total Connected:  {:?}", stats.total_connected);
     }
 
     // Disconnect cleanly

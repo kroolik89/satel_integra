@@ -4,6 +4,7 @@ use crate::config::{Config, ConnectionConfig};
 use crate::error::SatelError;
 use crate::parsers::{process_auto_read_response, process_ethm_version, process_integra_version};
 use crate::state::{ConnectionState, ConnectionType, SatelStateHandle};
+use chrono::Local;
 use futures::{SinkExt, StreamExt};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, SystemTime};
@@ -130,7 +131,7 @@ impl SatelCommunicationWorker {
                     {
                         tracing::info!("Auto-reconnect: Attempting reconnection...");
                         if let Ok(s) = self.state.read() {
-                            s.telemetry.reconnect_count.fetch_add(1, Ordering::Relaxed);
+                            s.telemetry.reconnect_attempts.fetch_add(1, Ordering::Relaxed);
                         }
                         let _ = self.satel_connection_worker_connect().await;
                     }
@@ -219,14 +220,18 @@ impl SatelCommunicationWorker {
         match timeout(write_timeout, stream.send(data.clone())).await {
             Ok(Ok(_)) => {
                 let mut s = self.state.write().unwrap();
-                s.telemetry.bytes_sent.fetch_add(data.len(), Ordering::Relaxed);
+                s.telemetry.bytes_sent.fetch_add(data.len() as u64, Ordering::Relaxed);
                 s.telemetry.last_send_at = Instant::now();
             }
             Ok(Err(e)) => {
+                self.state.read().unwrap().telemetry.io_errors.fetch_add(1, Ordering::Relaxed);
                 self.satel_connection_worker_connection_lost().await;
                 return Err(SatelError::Io(e));
             }
-            Err(_) => return Err(SatelError::Timeout),
+            Err(_) => {
+                self.state.read().unwrap().telemetry.timeouts.fetch_add(1, Ordering::Relaxed);
+                return Err(SatelError::Timeout);
+            }
         }
 
         // Receive with filtering Push notifications
@@ -238,7 +243,7 @@ impl SatelCommunicationWorker {
                 Ok(Some(Ok(frame))) => {
                     {
                         let s = self.state.read().unwrap();
-                        s.telemetry.bytes_received.fetch_add(frame.len(), Ordering::Relaxed);
+                        s.telemetry.bytes_received.fetch_add(frame.len() as u64, Ordering::Relaxed);
                     }
                     if frame.is_empty() {
                         continue;
@@ -246,6 +251,10 @@ impl SatelCommunicationWorker {
 
                     let is_result_code = frame[0] == 0xEF;
                     let is_accepted = is_result_code && frame.get(1) == Some(&0xFF);
+
+                    if is_result_code && !is_accepted {
+                        self.state.read().unwrap().telemetry.rejected_by_panel.fetch_add(1, Ordering::Relaxed);
+                    }
 
                     if (frame[0] != expected_cmd || is_result_code) && !is_accepted {
                         Self::notify_state_worker(
@@ -260,6 +269,7 @@ impl SatelCommunicationWorker {
                     }
                 }
                 Ok(Some(Err(e))) => {
+                    self.state.read().unwrap().telemetry.io_errors.fetch_add(1, Ordering::Relaxed);
                     self.satel_connection_worker_connection_lost().await;
                     return Err(SatelError::Io(e));
                 }
@@ -270,6 +280,7 @@ impl SatelCommunicationWorker {
                 Err(_) => break,
             }
         }
+        self.state.read().unwrap().telemetry.timeouts.fetch_add(1, Ordering::Relaxed);
         Err(SatelError::Timeout)
     }
 
@@ -300,6 +311,8 @@ impl SatelCommunicationWorker {
     async fn set_state_connected(&mut self) {
         {
             let mut s = self.state.write().unwrap();
+            s.telemetry.connections_established.fetch_add(1, Ordering::Relaxed);
+            s.telemetry.connected_since = Some(Local::now());
             s.telemetry.status.state = ConnectionState::Connected;
             s.telemetry.status.last_event_at = Instant::now();
             s.telemetry.status.failed_attempts = 0;
@@ -316,6 +329,15 @@ impl SatelCommunicationWorker {
         self.stream = None;
         {
             let mut s = self.state.write().unwrap();
+            let prev = s.telemetry.status.state;
+            if prev == ConnectionState::Connected {
+                s.telemetry.connections_lost.fetch_add(1, Ordering::Relaxed);
+                let now = Local::now();
+                if let Some(since) = s.telemetry.connected_since.take() {
+                    let session_dur = (now - since).to_std().unwrap_or(Duration::ZERO);
+                    s.telemetry.total_connected_before = s.telemetry.total_connected_before.saturating_add(session_dur);
+                }
+            }
             s.telemetry.status.state = ConnectionState::ConnectionLost;
             s.telemetry.status.last_event_at = Instant::now();
             s.telemetry.status.failed_attempts += 1;
@@ -327,10 +349,14 @@ impl SatelCommunicationWorker {
         self.stream = None;
         {
             let mut s = self.state.write().unwrap();
+            let now = Local::now();
+            if let Some(since) = s.telemetry.connected_since.take() {
+                let session_dur = (now - since).to_std().unwrap_or(Duration::ZERO);
+                s.telemetry.total_connected_before = s.telemetry.total_connected_before.saturating_add(session_dur);
+            }
             s.telemetry.status.state = ConnectionState::Disconnected;
             s.telemetry.status.last_event_at = Instant::now();
             s.telemetry.status.failed_attempts = 0;
-            s.telemetry.reset();
         }
         Self::notify_state_worker(&self.state_worker_tx, StateWorkerMessage::StatusChanged(ConnectionState::Disconnected)).await;
     }
@@ -576,7 +602,7 @@ impl SatelCommunicationWorker {
             Ok(Some(Ok(frame))) => {
                 {
                     let s = state.read().map_err(|_| SatelError::StatePoisoned)?;
-                    s.telemetry.bytes_received.fetch_add(frame.len(), Ordering::Relaxed);
+                    s.telemetry.bytes_received.fetch_add(frame.len() as u64, Ordering::Relaxed);
                 }
 
                 let is_accepted = frame[0] == 0xEF && frame.get(1) == Some(&0xFF);
@@ -585,9 +611,129 @@ impl SatelCommunicationWorker {
                 }
                 Ok(())
             }
-            Ok(Some(Err(e))) => Err(SatelError::Io(e)),
+            Ok(Some(Err(e))) => {
+                if let Ok(s) = state.read() {
+                    s.telemetry.io_errors.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(SatelError::Io(e))
+            }
             Ok(None) => Err(SatelError::StreamClosed),
             Err(_) => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::SatelState;
+    use std::sync::{Arc, RwLock};
+
+    #[tokio::test]
+    async fn test_disconnect_does_not_reset_counters() {
+        let state = Arc::new(RwLock::new(SatelState::new()));
+        {
+            let mut s = state.write().unwrap();
+            s.telemetry.status.state = ConnectionState::Connected;
+            s.telemetry.connected_since = Some(Local::now() - chrono::Duration::seconds(5));
+            s.telemetry.bytes_sent.store(100, Ordering::Relaxed);
+            s.telemetry.bytes_received.store(200, Ordering::Relaxed);
+            s.telemetry.connections_established.store(1, Ordering::Relaxed);
+            s.telemetry.reconnect_attempts.store(2, Ordering::Relaxed);
+            s.telemetry.connections_lost.store(3, Ordering::Relaxed);
+            s.telemetry.timeouts.store(4, Ordering::Relaxed);
+            s.telemetry.crc_errors.store(5, Ordering::Relaxed);
+            s.telemetry.rejected_by_panel.store(6, Ordering::Relaxed);
+            s.telemetry.io_errors.store(7, Ordering::Relaxed);
+        }
+
+        let (_tx, rx) = mpsc::channel(1);
+        let mut worker = SatelCommunicationWorker {
+            config: Arc::new(RwLock::new(Config::default())),
+            state: state.clone(),
+            rx,
+            stream: None,
+            state_worker_tx: None,
+        };
+
+        worker.satel_connection_worker_disconnect().await;
+
+        let s = state.read().unwrap();
+        assert_eq!(s.telemetry.status.state, ConnectionState::Disconnected);
+        assert_eq!(s.telemetry.bytes_sent.load(Ordering::Relaxed), 100);
+        assert_eq!(s.telemetry.bytes_received.load(Ordering::Relaxed), 200);
+        assert_eq!(s.telemetry.connections_established.load(Ordering::Relaxed), 1);
+        assert_eq!(s.telemetry.reconnect_attempts.load(Ordering::Relaxed), 2);
+        assert_eq!(s.telemetry.connections_lost.load(Ordering::Relaxed), 3);
+        assert_eq!(s.telemetry.timeouts.load(Ordering::Relaxed), 4);
+        assert_eq!(s.telemetry.crc_errors.load(Ordering::Relaxed), 5);
+        assert_eq!(s.telemetry.rejected_by_panel.load(Ordering::Relaxed), 6);
+        assert_eq!(s.telemetry.io_errors.load(Ordering::Relaxed), 7);
+        assert_eq!(s.telemetry.connected_since, None);
+        assert!(
+            s.telemetry.total_connected_before >= Duration::from_secs(4),
+            "Expected session to close and add ~5s, got {:?}",
+            s.telemetry.total_connected_before
+        );
+    }
+
+    #[tokio::test]
+    async fn test_connections_lost_only_increments_when_previously_connected() {
+        let state = Arc::new(RwLock::new(SatelState::new()));
+        let (_tx, rx) = mpsc::channel(1);
+        let mut worker = SatelCommunicationWorker {
+            config: Arc::new(RwLock::new(Config::default())),
+            state: state.clone(),
+            rx,
+            stream: None,
+            state_worker_tx: None,
+        };
+
+        // 1. From Disconnected -> ConnectionLost: connections_lost should NOT increment
+        {
+            let mut s = state.write().unwrap();
+            s.telemetry.status.state = ConnectionState::Disconnected;
+        }
+        worker.satel_connection_worker_connection_lost().await;
+        assert_eq!(state.read().unwrap().telemetry.connections_lost.load(Ordering::Relaxed), 0);
+
+        // 2. From Connecting -> ConnectionLost: connections_lost should NOT increment
+        {
+            let mut s = state.write().unwrap();
+            s.telemetry.status.state = ConnectionState::Connecting;
+        }
+        worker.satel_connection_worker_connection_lost().await;
+        assert_eq!(state.read().unwrap().telemetry.connections_lost.load(Ordering::Relaxed), 0);
+
+        // 3. From Handshake -> ConnectionLost: connections_lost should NOT increment
+        {
+            let mut s = state.write().unwrap();
+            s.telemetry.status.state = ConnectionState::Handshake;
+        }
+        worker.satel_connection_worker_connection_lost().await;
+        assert_eq!(state.read().unwrap().telemetry.connections_lost.load(Ordering::Relaxed), 0);
+
+        // 4. From ConnectionLost -> ConnectionLost: connections_lost should NOT increment
+        {
+            let mut s = state.write().unwrap();
+            s.telemetry.status.state = ConnectionState::ConnectionLost;
+        }
+        worker.satel_connection_worker_connection_lost().await;
+        assert_eq!(state.read().unwrap().telemetry.connections_lost.load(Ordering::Relaxed), 0);
+
+        // 5. From Connected -> ConnectionLost: connections_lost MUST increment by 1 and close session
+        {
+            let mut s = state.write().unwrap();
+            s.telemetry.status.state = ConnectionState::Connected;
+            s.telemetry.connected_since = Some(Local::now() - chrono::Duration::seconds(10));
+        }
+        worker.satel_connection_worker_connection_lost().await;
+        assert_eq!(state.read().unwrap().telemetry.connections_lost.load(Ordering::Relaxed), 1);
+        assert_eq!(state.read().unwrap().telemetry.connected_since, None);
+        assert!(
+            state.read().unwrap().telemetry.total_connected_before >= Duration::from_secs(9),
+            "Expected session duration around 10s, got {:?}",
+            state.read().unwrap().telemetry.total_connected_before
+        );
     }
 }
