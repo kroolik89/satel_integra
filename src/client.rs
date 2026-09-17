@@ -831,7 +831,7 @@ impl SatelIntegra {
     }
 
     /// Internal method to apply state updates after successful temperature read without network
-    pub fn update_temperature_success_internal(&self, id: u16, temp: f32) -> Result<f32, SatelError> {
+    pub(crate) fn update_temperature_success_internal(&self, id: u16, temp: f32) -> Result<f32, SatelError> {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         let zone = state
             .zones

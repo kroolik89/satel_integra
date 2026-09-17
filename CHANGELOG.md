@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Error `InvalidConfig` returned on invalid configuration validation.
 
 ### Changed
-- Removed deprecated `polling_temperatures`, `polling_temperatures_zones`, `polling_temperatures_interval_minutes`, `temp_max_timeout_errors`, `temp_max_sensor_errors` from `Config`.
+- Removed deprecated `polling_temperatures`, `polling_temperatures_zones`, `polling_temperatures_interval_minutes` from `Config`.
+- Note: `temp_max_timeout_errors` and `temp_max_sensor_errors` remain as fallback thresholds for zones not explicitly defined in `temperature_probes`.
 
 ## [1.5.1] - 2026-09-16
 
