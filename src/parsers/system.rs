@@ -402,16 +402,16 @@ fn get_rules(cmd: u8) -> Option<(usize, Vec<FieldRule>)> {
         ])),
         0x1D => Some((60, vec![
             custom(false, |data, memory| decode_acu_jam_level(data, memory)),
-            bitmask(15, 15, 1, false, |z| TroubleType::WirelessDeviceLowBattery { zone_id: z }),
-            bitmask(30, 15, 1, false, |z| TroubleType::WirelessDeviceNoComm { zone_id: z }),
-            bitmask(45, 15, 1, false, |o| TroubleType::WirelessOutputNoComm { output_id: o }),
+            bitmask(15, 15, 17, false, |z| TroubleType::WirelessDeviceLowBattery { zone_id: z }),
+            bitmask(30, 15, 17, false, |z| TroubleType::WirelessDeviceNoComm { zone_id: z }),
+            bitmask(45, 15, 17, false, |o| TroubleType::WirelessOutputNoComm { output_id: o }),
         ])),
         0x22 => Some((60, vec![
             bitmask_limit(0, 2, 14, 17, false, |x| TroubleType::ExpanderAcuJammedOrShortCircuit(x as u8)),
             bitmask_limit(2, 2, 14, 17, true, |x| TroubleType::ExpanderAcuJammedOrShortCircuit(x as u8)),
-            bitmask(15, 15, 1, true, |z| TroubleType::WirelessDeviceLowBattery { zone_id: z }),
-            bitmask(30, 15, 1, true, |z| TroubleType::WirelessDeviceNoComm { zone_id: z }),
-            bitmask(45, 15, 1, true, |o| TroubleType::WirelessOutputNoComm { output_id: o }),
+            bitmask(15, 15, 17, true, |z| TroubleType::WirelessDeviceLowBattery { zone_id: z }),
+            bitmask(30, 15, 17, true, |z| TroubleType::WirelessDeviceNoComm { zone_id: z }),
+            bitmask(45, 15, 17, true, |o| TroubleType::WirelessOutputNoComm { output_id: o }),
         ])),
         0x1E => Some((30, vec![
             bitmask(0, 8, 1, false, |x| TroubleType::ExpanderNoComm(x as u8)),
@@ -445,14 +445,14 @@ fn get_rules(cmd: u8) -> Option<(usize, Vec<FieldRule>)> {
             bitmask(32, 16, 1, true, TroubleType::ZoneTamperTrouble),
         ])),
         0x2C => Some((45, vec![
-            bitmask(0, 15, 121, false, |z| TroubleType::WirelessDeviceLowBattery { zone_id: z }),
-            bitmask(15, 15, 121, false, |z| TroubleType::WirelessDeviceNoComm { zone_id: z }),
-            bitmask(30, 15, 121, false, |o| TroubleType::WirelessOutputNoComm { output_id: o }),
+            bitmask(0, 15, 137, false, |z| TroubleType::WirelessDeviceLowBattery { zone_id: z }),
+            bitmask(15, 15, 137, false, |z| TroubleType::WirelessDeviceNoComm { zone_id: z }),
+            bitmask(30, 15, 137, false, |o| TroubleType::WirelessOutputNoComm { output_id: o }),
         ])),
         0x2E => Some((45, vec![
-            bitmask(0, 15, 121, true, |z| TroubleType::WirelessDeviceLowBattery { zone_id: z }),
-            bitmask(15, 15, 121, true, |z| TroubleType::WirelessDeviceNoComm { zone_id: z }),
-            bitmask(30, 15, 121, true, |o| TroubleType::WirelessOutputNoComm { output_id: o }),
+            bitmask(0, 15, 137, true, |z| TroubleType::WirelessDeviceLowBattery { zone_id: z }),
+            bitmask(15, 15, 137, true, |z| TroubleType::WirelessDeviceNoComm { zone_id: z }),
+            bitmask(30, 15, 137, true, |o| TroubleType::WirelessOutputNoComm { output_id: o }),
         ])),
         0x2D => Some((47, vec![
             bitmask(0, 16, 129, false, TroubleType::TechnicalZoneTrouble),
@@ -1131,7 +1131,7 @@ mod tests {
     fn test_t1_0x1d_byte_59_bit_7() {
         let mut data = vec![0; 60];
         data[59] |= 1 << 7;
-        check_single_active(0x1D, &data, TroubleItem::Flag { trouble: TroubleType::WirelessOutputNoComm { output_id: 120 }, memory: false, active: true });
+        check_single_active(0x1D, &data, TroubleItem::Flag { trouble: TroubleType::WirelessOutputNoComm { output_id: 136 }, memory: false, active: true });
     }
 
     #[test]
@@ -1224,7 +1224,7 @@ mod tests {
     fn test_t1_0x22_byte_15_bit_0() {
         let mut data = vec![0; 60];
         data[15] |= 1 << 0;
-        check_single_active(0x22, &data, TroubleItem::Flag { trouble: TroubleType::WirelessDeviceLowBattery { zone_id: 1 }, memory: true, active: true });
+        check_single_active(0x22, &data, TroubleItem::Flag { trouble: TroubleType::WirelessDeviceLowBattery { zone_id: 17 }, memory: true, active: true });
     }
 
     #[test]
@@ -1252,14 +1252,14 @@ mod tests {
     fn test_t1_0x2c_byte_0_bit_0() {
         let mut data = vec![0; 45];
         data[0] |= 1 << 0;
-        check_single_active(0x2C, &data, TroubleItem::Flag { trouble: TroubleType::WirelessDeviceLowBattery { zone_id: 121 }, memory: false, active: true });
+        check_single_active(0x2C, &data, TroubleItem::Flag { trouble: TroubleType::WirelessDeviceLowBattery { zone_id: 137 }, memory: false, active: true });
     }
 
     #[test]
     fn test_t1_0x2c_byte_14_bit_7() {
         let mut data = vec![0; 45];
         data[14] |= 1 << 7;
-        check_single_active(0x2C, &data, TroubleItem::Flag { trouble: TroubleType::WirelessDeviceLowBattery { zone_id: 240 }, memory: false, active: true });
+        check_single_active(0x2C, &data, TroubleItem::Flag { trouble: TroubleType::WirelessDeviceLowBattery { zone_id: 256 }, memory: false, active: true });
     }
 
     #[test]
@@ -1435,5 +1435,69 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_0x1d_real_panel_abax_troubles() {
+        let mut data = vec![0u8; 60];
+        // low-battery dla wejść 23, 24 (bit = numer - 17):
+        // 23 - 17 = 6 -> byte 15, bit 6
+        data[15] |= 1 << 6;
+        // 24 - 17 = 7 -> byte 15, bit 7
+        data[15] |= 1 << 7;
+
+        // no-comm dla wejść 23, 24, 29, 30:
+        // 23 - 17 = 6 -> byte 30, bit 6
+        data[30] |= 1 << 6;
+        // 24 - 17 = 7 -> byte 30, bit 7
+        data[30] |= 1 << 7;
+        // 29 - 17 = 12 -> byte 31, bit 4
+        data[31] |= 1 << 4;
+        // 30 - 17 = 13 -> byte 31, bit 5
+        data[31] |= 1 << 5;
+
+        let items = decode_troubles(0x1D, &data).unwrap();
+        let active_wireless: Vec<TroubleType> = items.iter().filter_map(|item| {
+            match item {
+                TroubleItem::Flag { trouble, active: true, memory: false } => {
+                    match trouble {
+                        TroubleType::WirelessDeviceLowBattery { .. }
+                        | TroubleType::WirelessDeviceNoComm { .. }
+                        | TroubleType::WirelessOutputNoComm { .. } => Some(trouble.clone()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        }).collect();
+
+        assert_eq!(active_wireless.len(), 6);
+        assert!(active_wireless.contains(&TroubleType::WirelessDeviceLowBattery { zone_id: 23 }));
+        assert!(active_wireless.contains(&TroubleType::WirelessDeviceLowBattery { zone_id: 24 }));
+        assert!(active_wireless.contains(&TroubleType::WirelessDeviceNoComm { zone_id: 23 }));
+        assert!(active_wireless.contains(&TroubleType::WirelessDeviceNoComm { zone_id: 24 }));
+        assert!(active_wireless.contains(&TroubleType::WirelessDeviceNoComm { zone_id: 29 }));
+        assert!(active_wireless.contains(&TroubleType::WirelessDeviceNoComm { zone_id: 30 }));
+    }
+
+    #[test]
+    fn test_wireless_device_bit0_part3_and_part6() {
+        // bit 0 w części 3 -> zone_id 17
+        let mut data_part3 = vec![0u8; 60];
+        data_part3[15] |= 1 << 0;
+        check_single_active(0x1D, &data_part3, TroubleItem::Flag {
+            trouble: TroubleType::WirelessDeviceLowBattery { zone_id: 17 },
+            memory: false,
+            active: true,
+        });
+
+        // bit 0 w części 6 (0x2C) -> zone_id 137
+        let mut data_part6 = vec![0u8; 45];
+        data_part6[0] |= 1 << 0;
+        check_single_active(0x2C, &data_part6, TroubleItem::Flag {
+            trouble: TroubleType::WirelessDeviceLowBattery { zone_id: 137 },
+            memory: false,
+            active: true,
+        });
     }
 }

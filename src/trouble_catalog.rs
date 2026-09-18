@@ -155,9 +155,9 @@ impl TroubleType {
             desc!("gsm_ntp_server_conn_error", "INT-GSM: NTP Server Error", TroubleAddressing::Range { from: 0, to: 7 }, None),
 
             // --- Wireless devices ---
-            desc!("wireless_device_low_battery", "Wireless Sensor: Low Battery", TroubleAddressing::Range { from: 1, to: 240 }, Some(TroubleDomain::Zone)),
-            desc!("wireless_device_no_comm", "Wireless Sensor: No Radio Communication", TroubleAddressing::Range { from: 1, to: 240 }, Some(TroubleDomain::Zone)),
-            desc!("wireless_output_no_comm", "Wireless Output: No Radio Communication", TroubleAddressing::Range { from: 1, to: 240 }, Some(TroubleDomain::Output)),
+            desc!("wireless_device_low_battery", "Wireless Sensor: Low Battery", TroubleAddressing::Range { from: 17, to: 256 }, Some(TroubleDomain::Zone)),
+            desc!("wireless_device_no_comm", "Wireless Sensor: No Radio Communication", TroubleAddressing::Range { from: 17, to: 256 }, Some(TroubleDomain::Zone)),
+            desc!("wireless_output_no_comm", "Wireless Output: No Radio Communication", TroubleAddressing::Range { from: 17, to: 256 }, Some(TroubleDomain::Output)),
             
             // --- Key fobs ---
             desc_custom!("master_key_fob_low_battery", "Master User Key Fob: Low Battery", TroubleAddressing::Range { from: 1, to: 8 }, None, true, false),
@@ -485,12 +485,12 @@ mod tests {
         check(TroubleType::GsmMailServerConnError(7));
         check(TroubleType::GsmNtpServerConnError(0));
         check(TroubleType::GsmNtpServerConnError(7));
-        check(TroubleType::WirelessDeviceLowBattery { zone_id: 1 });
-        check(TroubleType::WirelessDeviceLowBattery { zone_id: 240 });
-        check(TroubleType::WirelessDeviceNoComm { zone_id: 1 });
-        check(TroubleType::WirelessDeviceNoComm { zone_id: 240 });
-        check(TroubleType::WirelessOutputNoComm { output_id: 1 });
-        check(TroubleType::WirelessOutputNoComm { output_id: 240 });
+        check(TroubleType::WirelessDeviceLowBattery { zone_id: 17 });
+        check(TroubleType::WirelessDeviceLowBattery { zone_id: 256 });
+        check(TroubleType::WirelessDeviceNoComm { zone_id: 17 });
+        check(TroubleType::WirelessDeviceNoComm { zone_id: 256 });
+        check(TroubleType::WirelessOutputNoComm { output_id: 17 });
+        check(TroubleType::WirelessOutputNoComm { output_id: 256 });
                         check(TroubleType::MasterKeyFobLowBattery(1));
         check(TroubleType::MasterKeyFobLowBattery(8));
         check(TroubleType::UserKeyFobLowBattery { user_id: 1 });
