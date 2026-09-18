@@ -31,6 +31,7 @@ use crate::state::{
 };
 use crate::worker::{InternalMessage, SatelCommunicationWorker};
 use chrono::Local;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -44,6 +45,7 @@ pub struct SatelIntegra {
     pub(crate) config: Arc<RwLock<Config>>,
     pub(crate) worker: Arc<Mutex<Option<SatelCommunicationWorker>>>,
     pub(crate) event_tx: broadcast::Sender<SatelEvent>,
+    pub(crate) auto_read_dirty: Arc<AtomicBool>,
 }
 
 impl SatelIntegra {
@@ -54,6 +56,7 @@ impl SatelIntegra {
         let (tx, rx) = mpsc::channel(100);
         let (event_tx, _) = broadcast::channel(1024);
         let config_arc = Arc::new(RwLock::new(config));
+        let auto_read_dirty = Arc::new(AtomicBool::new(false));
 
         let worker = SatelCommunicationWorker {
             config: config_arc.clone(),
@@ -61,6 +64,7 @@ impl SatelIntegra {
             rx,
             stream: None,
             state_worker_tx: None,
+            auto_read_dirty: auto_read_dirty.clone(),
         };
 
         Self {
@@ -69,6 +73,7 @@ impl SatelIntegra {
             config: config_arc,
             worker: Arc::new(Mutex::new(Some(worker))),
             event_tx,
+            auto_read_dirty,
         }
     }
 
@@ -144,16 +149,27 @@ impl SatelIntegra {
     /// (IP, port, RS, encryption, key) will NEVER change, 
     /// even if the `new_config` object contains different values.
     /// The new connection parameters will be silently overwritten by the old ones from the current state.
+    ///
+    /// If auto-read categories (`auto_read_*`) have changed, the 0x7F push notification mask
+    /// is automatically re-sent to the panel on the next keep-alive tick without reconnecting.
     pub fn hot_reload_config(&self, mut new_config: Config) -> Result<(), SatelError> {
         new_config.validate()?;
-        {
+        let mask_changed = {
             let mut guard = self.config.write().unwrap();
             // Preserve connection parameters
             new_config.connection = guard.connection.clone();
             new_config.encryption = guard.encryption;
             new_config.integration_key = guard.integration_key.clone();
-            
+
+            let old_mask = SatelCommunicationWorker::satel_connection_worker_connect_build_push_mask(&guard, true);
+            let new_mask = SatelCommunicationWorker::satel_connection_worker_connect_build_push_mask(&new_config, true);
+            let changed = old_mask != new_mask;
+
             *guard = new_config;
+            changed
+        };
+        if mask_changed {
+            self.auto_read_dirty.store(true, Ordering::SeqCst);
         }
         let _ = self.event_tx.send(SatelEvent::ConfigUpdated);
         Ok(())
@@ -1833,5 +1849,51 @@ mod tests {
             "Expected total_connected around 70s, got {:?}",
             stats.total_connected
         );
+    }
+
+    #[test]
+    fn test_hot_reload_config_identical_auto_read_flag_unchanged() {
+        let client = SatelIntegra::new(Config::default());
+        assert_eq!(client.auto_read_dirty.load(Ordering::SeqCst), false);
+        client.hot_reload_config(Config::default()).unwrap();
+        assert_eq!(client.auto_read_dirty.load(Ordering::SeqCst), false);
+    }
+
+    #[test]
+    fn test_hot_reload_config_auto_read_zones_violation_flag_set() {
+        let client = SatelIntegra::new(Config::default());
+        assert_eq!(client.auto_read_dirty.load(Ordering::SeqCst), false);
+        let mut new_config = Config::default();
+        new_config.auto_read_zones_violation = true;
+        client.hot_reload_config(new_config).unwrap();
+        assert_eq!(client.auto_read_dirty.load(Ordering::SeqCst), true);
+    }
+
+    #[test]
+    fn test_hot_reload_config_unrelated_param_change_flag_unchanged() {
+        let client = SatelIntegra::new(Config::default());
+        assert_eq!(client.auto_read_dirty.load(Ordering::SeqCst), false);
+        let mut new_config = client.get_config();
+        new_config.temperature_probes = vec![TemperatureProbe {
+            zone_id: 1,
+            max_timeout_errors: 5,
+            max_sensor_errors: 3,
+            interval_minutes: 2,
+            unblock_enabled: true,
+            unblock_after_cycles: 10,
+        }];
+        client.hot_reload_config(new_config).unwrap();
+        assert_eq!(client.auto_read_dirty.load(Ordering::SeqCst), false);
+    }
+
+    #[test]
+    fn test_build_push_mask_empty_config_is_all_zeros() {
+        let config = Config::default();
+        let mask12 = SatelCommunicationWorker::satel_connection_worker_connect_build_push_mask(&config, false);
+        let mask14 = SatelCommunicationWorker::satel_connection_worker_connect_build_push_mask(&config, true);
+        assert_eq!(mask12.len(), 12);
+        assert_eq!(mask12, vec![0u8; 12]);
+        assert_eq!(mask14.len(), 14);
+        assert_eq!(mask14, vec![0u8; 14]);
     }
 }

@@ -429,6 +429,7 @@ mod tests {
             event_tx: tx,
             tx: internal_tx,
             worker: Arc::new(Mutex::new(None)),
+            auto_read_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         (client, rx)
     }

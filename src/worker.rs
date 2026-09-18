@@ -7,7 +7,7 @@ use crate::parsers::{process_auto_read_response, process_ethm_version, process_i
 use crate::state::{ConnectionState, ConnectionType, SatelStateHandle};
 use chrono::Local;
 use futures::{SinkExt, StreamExt};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
@@ -70,6 +70,7 @@ pub(crate) struct SatelCommunicationWorker {
     pub rx: mpsc::Receiver<InternalMessage>,
     pub stream: Option<FramedStream>,
     pub state_worker_tx: Option<mpsc::Sender<StateWorkerMessage>>,
+    pub auto_read_dirty: std::sync::Arc<AtomicBool>,
 }
 
 impl SatelCommunicationWorker {
@@ -107,9 +108,9 @@ impl SatelCommunicationWorker {
                 }
 
                 _ = ping_interval.tick() => {
-                    let (current_state, last_send, last_event) = {
+                    let (current_state, last_event) = {
                         let s = self.state.read().unwrap();
-                        (s.telemetry.status.state, s.telemetry.last_send_at, s.telemetry.status.last_event_at)
+                        (s.telemetry.status.state, s.telemetry.status.last_event_at)
                     };
 
                     // 1. Watchdog for Connecting / Handshake
@@ -119,7 +120,19 @@ impl SatelCommunicationWorker {
                         self.satel_connection_worker_connection_lost().await;
                     }
 
+                    // 1b. Re-send 0x7F push mask when auto_read config changed
+                    if current_state == ConnectionState::Connected
+                        && self.auto_read_dirty.swap(false, Ordering::SeqCst)
+                    {
+                        let conn_timeout = Duration::from_millis(self.config.read().unwrap().read_timeout_ms);
+                        if let Err(e) = self.satel_connection_worker_send_push_mask(conn_timeout).await {
+                            tracing::warn!("Error re-sending push notification configuration (0x7F): {:?}", e);
+                            self.auto_read_dirty.store(true, Ordering::SeqCst);
+                        }
+                    }
+
                     // 2. Ping keep-alive
+                    let last_send = self.state.read().unwrap().telemetry.last_send_at;
                     if current_state == ConnectionState::Connected && last_send.elapsed() >= Duration::from_secs(2) {
                         let cmd = vec![SatelCommand::IntegraVersion.to_byte()];
                         let _ = self.satel_connection_worker_exchange(cmd, 0x7E, Duration::from_millis(500), Duration::from_millis(500), true).await;
@@ -371,6 +384,8 @@ impl SatelCommunicationWorker {
 
         let conn_timeout = Duration::from_millis(self.config.read().unwrap().read_timeout_ms);
 
+        self.auto_read_dirty.store(false, Ordering::SeqCst);
+
         // STEP 1: Physical transport connection
         let stream = match self.satel_connection_worker_connect_physical(conn_timeout).await {
             Ok(s) => s,
@@ -502,7 +517,7 @@ impl SatelCommunicationWorker {
         Ok(())
     }
 
-    async fn satel_connection_worker_connect_auto_read(
+    async fn satel_connection_worker_send_push_mask(
         &mut self,
         conn_timeout: Duration,
     ) -> Result<(), SatelError> {
@@ -521,19 +536,25 @@ impl SatelCommunicationWorker {
         let mut auto_push_data = vec![SatelCommand::ListOfNewData.to_byte()];
         auto_push_data.extend_from_slice(&mask);
 
-        match self
+        let response = self
             .satel_connection_worker_exchange(auto_push_data, 0x7F, conn_timeout, conn_timeout, false)
-            .await
-        {
-            Ok(response) => {
-                tracing::info!("Handshake: push notification configuration successful");
-                let report = {
-                    let config = self.config.read().unwrap();
-                    process_auto_read_response(&*config, support_14_byte_mask, &response)
-                };
-                Self::notify_state_worker(&self.state_worker_tx, StateWorkerMessage::AutoReadReport(report)).await;
-                Ok(())
-            }
+            .await?;
+
+        tracing::info!("Push notification configuration (0x7F) successful");
+        let report = {
+            let config = self.config.read().unwrap();
+            process_auto_read_response(&*config, support_14_byte_mask, &response)
+        };
+        Self::notify_state_worker(&self.state_worker_tx, StateWorkerMessage::AutoReadReport(report)).await;
+        Ok(())
+    }
+
+    async fn satel_connection_worker_connect_auto_read(
+        &mut self,
+        conn_timeout: Duration,
+    ) -> Result<(), SatelError> {
+        match self.satel_connection_worker_send_push_mask(conn_timeout).await {
+            Ok(()) => Ok(()),
             Err(e) => {
                 tracing::warn!("Handshake: error during push notification configuration: {:?}", e);
                 self.satel_connection_worker_connection_lost().await;
@@ -542,7 +563,7 @@ impl SatelCommunicationWorker {
         }
     }
 
-    fn satel_connection_worker_connect_build_push_mask(config: &Config, support_14_byte_mask: bool) -> Vec<u8> {
+    pub(crate) fn satel_connection_worker_connect_build_push_mask(config: &Config, support_14_byte_mask: bool) -> Vec<u8> {
         let mask_len = if support_14_byte_mask { 14 } else { 12 };
         let mut mask = vec![0u8; mask_len];
 
@@ -672,6 +693,7 @@ mod tests {
             rx,
             stream: None,
             state_worker_tx: None,
+            auto_read_dirty: Arc::new(AtomicBool::new(false)),
         };
 
         worker.satel_connection_worker_disconnect().await;
@@ -705,6 +727,7 @@ mod tests {
             rx,
             stream: None,
             state_worker_tx: None,
+            auto_read_dirty: Arc::new(AtomicBool::new(false)),
         };
 
         // 1. From Disconnected -> ConnectionLost: connections_lost should NOT increment
