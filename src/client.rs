@@ -55,6 +55,9 @@ pub struct SatelIntegra {
     pub(crate) session_zone_type: Arc<AtomicU8>,
     pub(crate) session_output_type: Arc<AtomicU8>,
     pub(crate) session_partition_type: Arc<AtomicU8>,
+    pub(crate) session_zone_confirmed: Arc<AtomicBool>,
+    pub(crate) session_output_confirmed: Arc<AtomicBool>,
+    pub(crate) session_partition_confirmed: Arc<AtomicBool>,
 }
 
 impl SatelIntegra {
@@ -70,6 +73,9 @@ impl SatelIntegra {
         let session_zone_type = Arc::new(AtomicU8::new(if extended { 5 } else { 1 }));
         let session_output_type = Arc::new(AtomicU8::new(if extended { 17 } else { 4 }));
         let session_partition_type = Arc::new(AtomicU8::new(if extended { 19 } else { 0 }));
+        let session_zone_confirmed = Arc::new(AtomicBool::new(false));
+        let session_output_confirmed = Arc::new(AtomicBool::new(false));
+        let session_partition_confirmed = Arc::new(AtomicBool::new(false));
 
         let worker = SatelCommunicationWorker {
             config: config_arc.clone(),
@@ -90,6 +96,9 @@ impl SatelIntegra {
             session_zone_type,
             session_output_type,
             session_partition_type,
+            session_zone_confirmed,
+            session_output_confirmed,
+            session_partition_confirmed,
         }
     }
 
@@ -106,6 +115,9 @@ impl SatelIntegra {
             self.session_zone_type.store(if extended { 5 } else { 1 }, Ordering::SeqCst);
             self.session_output_type.store(if extended { 17 } else { 4 }, Ordering::SeqCst);
             self.session_partition_type.store(if extended { 19 } else { 0 }, Ordering::SeqCst);
+            self.session_zone_confirmed.store(false, Ordering::SeqCst);
+            self.session_output_confirmed.store(false, Ordering::SeqCst);
+            self.session_partition_confirmed.store(false, Ordering::SeqCst);
         }
 
         let maybe_worker = {
@@ -200,6 +212,9 @@ impl SatelIntegra {
             self.session_zone_type.store(if new_extended { 5 } else { 1 }, Ordering::SeqCst);
             self.session_output_type.store(if new_extended { 17 } else { 4 }, Ordering::SeqCst);
             self.session_partition_type.store(if new_extended { 19 } else { 0 }, Ordering::SeqCst);
+            self.session_zone_confirmed.store(false, Ordering::SeqCst);
+            self.session_output_confirmed.store(false, Ordering::SeqCst);
+            self.session_partition_confirmed.store(false, Ordering::SeqCst);
         }
         let _ = self.event_tx.send(SatelEvent::ConfigUpdated);
         Ok(())
@@ -354,8 +369,11 @@ impl SatelIntegra {
     async fn query_zone_internal(&self, zone_id: u16) -> Result<(ZoneName, Option<ZoneParams>), SatelError> {
         let extended = self.config.read().unwrap().extended_name_read;
         let session_type = self.session_zone_type.load(Ordering::SeqCst);
+        let confirmed = self.session_zone_confirmed.load(Ordering::SeqCst);
         let types_to_try: Vec<u8> = if extended {
-            if session_type == 5 {
+            if confirmed {
+                vec![session_type]
+            } else if session_type == 5 {
                 vec![5, 1]
             } else {
                 vec![1]
@@ -375,7 +393,7 @@ impl SatelIntegra {
             let response = self.exchange(cmd, None, None).await?;
 
             if !response.is_empty() && response[0] == SatelCommand::ResultCode.to_byte() {
-                // Centrala odrzuciła zapytanie (0xEF) — próbujemy niższy typ w łańcuchu
+                // Centrala odrzuciła zapytanie (0xEF) — próbujemy niższy typ w łańcuchu (jeśli niepotwierdzony)
                 continue;
             }
 
@@ -384,6 +402,7 @@ impl SatelIntegra {
                     self.session_zone_type.store(dev_type, Ordering::SeqCst);
                     tracing::info!("Session zone query type downgraded to {}", dev_type);
                 }
+                self.session_zone_confirmed.store(true, Ordering::SeqCst);
 
                 let (id, s_name, params) = process_zone_response(&response)?;
 
@@ -551,8 +570,11 @@ impl SatelIntegra {
     async fn query_output_internal(&self, output_id: u16) -> Result<(OutputName, Option<OutputParams>), SatelError> {
         let extended = self.config.read().unwrap().extended_name_read;
         let session_type = self.session_output_type.load(Ordering::SeqCst);
+        let confirmed = self.session_output_confirmed.load(Ordering::SeqCst);
         let types_to_try: Vec<u8> = if extended {
-            if session_type == 17 {
+            if confirmed {
+                vec![session_type]
+            } else if session_type == 17 {
                 vec![17, 4]
             } else {
                 vec![4]
@@ -580,6 +602,7 @@ impl SatelIntegra {
                     self.session_output_type.store(dev_type, Ordering::SeqCst);
                     tracing::info!("Session output query type downgraded to {}", dev_type);
                 }
+                self.session_output_confirmed.store(true, Ordering::SeqCst);
 
                 let (id, s_name, params) = process_output_response(&response)?;
 
@@ -760,12 +783,17 @@ impl SatelIntegra {
     async fn query_partition_internal(&self, partition_id: u16) -> Result<(PartitionName, Option<PartitionParams>), SatelError> {
         let extended = self.config.read().unwrap().extended_name_read;
         let session_type = self.session_partition_type.load(Ordering::SeqCst);
+        let confirmed = self.session_partition_confirmed.load(Ordering::SeqCst);
         let types_to_try: Vec<u8> = if extended {
-            match session_type {
-                19 => vec![19, 18, 16, 0],
-                18 => vec![18, 16, 0],
-                16 => vec![16, 0],
-                _ => vec![0],
+            if confirmed {
+                vec![session_type]
+            } else {
+                match session_type {
+                    19 => vec![19, 18, 16, 0],
+                    18 => vec![18, 16, 0],
+                    16 => vec![16, 0],
+                    _ => vec![0],
+                }
             }
         } else {
             vec![0]
@@ -790,6 +818,7 @@ impl SatelIntegra {
                     self.session_partition_type.store(dev_type, Ordering::SeqCst);
                     tracing::info!("Session partition query type downgraded to {}", dev_type);
                 }
+                self.session_partition_confirmed.store(true, Ordering::SeqCst);
 
                 let (id, s_name, params) = process_partition_response(&response)?;
 
@@ -2236,6 +2265,9 @@ mod tests {
         let session_zone_type = Arc::new(AtomicU8::new(if extended { 5 } else { 1 }));
         let session_output_type = Arc::new(AtomicU8::new(if extended { 17 } else { 4 }));
         let session_partition_type = Arc::new(AtomicU8::new(if extended { 19 } else { 0 }));
+        let session_zone_confirmed = Arc::new(AtomicBool::new(false));
+        let session_output_confirmed = Arc::new(AtomicBool::new(false));
+        let session_partition_confirmed = Arc::new(AtomicBool::new(false));
 
         let client = SatelIntegra {
             tx,
@@ -2247,6 +2279,9 @@ mod tests {
             session_zone_type,
             session_output_type,
             session_partition_type,
+            session_zone_confirmed,
+            session_output_confirmed,
+            session_partition_confirmed,
         };
         (client, rx)
     }
@@ -2453,5 +2488,87 @@ mod tests {
         }
         assert_eq!(client.output_control(3), Some(OutputControl::None));
         assert_eq!(client.is_output_controllable(3), Some(false));
+    }
+
+    #[tokio::test]
+    async fn test_zone_confirmed_stops_fallback_to_1() {
+        let (client, mut rx) = create_mock_client(Config::default());
+        let queries_sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let queries_sent_clone = queries_sent.clone();
+
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                if let InternalMessage::ExchangeStandard { data, response_tx, .. } = msg {
+                    queries_sent_clone.fetch_add(1, Ordering::SeqCst);
+                    let dev_type = data[1];
+                    let dev_id = data[2];
+                    if dev_id == 1 && dev_type == 5 {
+                        let mut resp = vec![0xEE, 5, 1, 0];
+                        resp.extend_from_slice(&pad_test_name("Wejscie 1"));
+                        resp.push(1); // partition 1
+                        let _ = response_tx.send(Ok(resp));
+                    } else if dev_id == 2 {
+                        let _ = response_tx.send(Ok(vec![0xEF, 0x08]));
+                    } else {
+                        let _ = response_tx.send(Ok(vec![0xEF, 0x08]));
+                    }
+                }
+            }
+        });
+
+        // 1. Strefa 1: odczyt typem rozszerzonym (5) kończy się sukcesem
+        let z1 = client.get_zone_name(1).await.unwrap();
+        assert_eq!(z1.name, "Wejscie 1");
+        assert_eq!(client.session_zone_type.load(Ordering::SeqCst), 5);
+        assert_eq!(client.session_zone_confirmed.load(Ordering::SeqCst), true);
+        assert_eq!(queries_sent.load(Ordering::SeqCst), 1);
+
+        // 2. Strefa 2: nieistniejąca pozycja po potwierdzeniu typu 5 powinna wysłać TYLKO 1 zapytanie (z typem 5)
+        let z2 = client.get_zone_name(2).await.unwrap();
+        assert_eq!(z2.name, "");
+        assert_eq!(queries_sent.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_partition_confirmed_stops_chain_fallback() {
+        let (client, mut rx) = create_mock_client(Config::default());
+        let queries_sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let queries_sent_clone = queries_sent.clone();
+
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                if let InternalMessage::ExchangeStandard { data, response_tx, .. } = msg {
+                    queries_sent_clone.fetch_add(1, Ordering::SeqCst);
+                    let dev_type = data[1];
+                    let dev_id = data[2];
+                    if dev_id == 1 && dev_type == 19 {
+                        let mut resp = vec![0xEE, 19, 1, 0];
+                        resp.extend_from_slice(&pad_test_name("Parter"));
+                        resp.push(1); // object 1
+                        resp.push(0); // opt1
+                        resp.push(0); // opt2
+                        resp.extend_from_slice(&[0, 0]); // defer
+                        resp.extend_from_slice(&[0, 0, 0, 0]); // dependent
+                        let _ = response_tx.send(Ok(resp));
+                    } else if dev_id == 2 {
+                        let _ = response_tx.send(Ok(vec![0xEF, 0x08]));
+                    } else {
+                        let _ = response_tx.send(Ok(vec![0xEF, 0x08]));
+                    }
+                }
+            }
+        });
+
+        // 1. Partycja 1: odczyt typem 19 kończy się sukcesem
+        let p1 = client.get_partition_name(1).await.unwrap();
+        assert_eq!(p1.name, "Parter");
+        assert_eq!(client.session_partition_type.load(Ordering::SeqCst), 19);
+        assert_eq!(client.session_partition_confirmed.load(Ordering::SeqCst), true);
+        assert_eq!(queries_sent.load(Ordering::SeqCst), 1);
+
+        // 2. Partycja 2: nieistniejąca pozycja po potwierdzeniu typu 19 wysyła TYLKO 1 zapytanie (z typem 19, bez 18, 16, 0)
+        let p2 = client.get_partition_name(2).await.unwrap();
+        assert_eq!(p2.name, "");
+        assert_eq!(queries_sent.load(Ordering::SeqCst), 2);
     }
 }

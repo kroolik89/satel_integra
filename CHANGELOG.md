@@ -29,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `PartitionType` (codes 0..3) with stable snake_case key, English label, options bitmask (`PartitionOptions`), auto-arm defer timer (`AutoArmDeferTimer`), and dependent partitions mask (`DependentPartitions`).
 - Example `examples/2_10_get_extended_names_and_params.rs` demonstrating full discovery of names, parameters, and control modes.
 
+### Fixed
+- Name queries (0xEE): `0xEF` result codes returned for non-existent items are no longer forwarded to `SatelAutoRequester` as `PanelMessage` (avoiding false "Wynik polecenia: Inny kod (8)" trouble log entries).
+- Fallback hierarchy stops trying lower query types once the extended query type has been confirmed in the session, reducing non-existent item queries to exactly 1 exchange.
+
 ## [1.8.1] - 2026-09-18
 
 ### Fixed

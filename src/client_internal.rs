@@ -433,6 +433,9 @@ mod tests {
             session_zone_type: Arc::new(std::sync::atomic::AtomicU8::new(5)),
             session_output_type: Arc::new(std::sync::atomic::AtomicU8::new(17)),
             session_partition_type: Arc::new(std::sync::atomic::AtomicU8::new(19)),
+            session_zone_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            session_output_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            session_partition_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         (client, rx)
     }

@@ -274,7 +274,8 @@ impl SatelCommunicationWorker {
                         self.state.read().unwrap().telemetry.non_ping_frames.fetch_add(1, Ordering::Relaxed);
                     }
 
-                    if (frame[0] != expected_cmd || is_result_code) && !is_accepted {
+                    let is_name_response_ef = expected_cmd == 0xEE && is_result_code;
+                    if (frame[0] != expected_cmd || is_result_code) && !is_accepted && !is_name_response_ef {
                         Self::notify_state_worker(
                             &self.state_worker_tx,
                             StateWorkerMessage::Frame(frame.clone()),
@@ -776,5 +777,71 @@ mod tests {
             "Expected session duration around 10s, got {:?}",
             state.read().unwrap().telemetry.total_connected_before
         );
+    }
+
+    #[tokio::test]
+    async fn test_worker_exchange_name_0xef_not_notified() {
+        use futures::{SinkExt, StreamExt};
+        use std::sync::atomic::AtomicU64;
+
+        let state = Arc::new(RwLock::new(SatelState::new()));
+        let (_tx, rx) = mpsc::channel(1);
+        let (state_worker_tx, mut state_worker_rx) = mpsc::channel(10);
+        let (client_io, server_io) = tokio::io::duplex(1024);
+
+        let crc1 = Arc::new(AtomicU64::new(0));
+        let codec = crate::codec::SatelCodec::new(crc1);
+        let framed: tokio_util::codec::Framed<Box<dyn AsyncReadWrite>, _> =
+            tokio_util::codec::Framed::new(Box::new(client_io), codec);
+
+        let mut worker = SatelCommunicationWorker {
+            config: Arc::new(RwLock::new(Config::default())),
+            state: state.clone(),
+            rx,
+            stream: Some(framed),
+            state_worker_tx: Some(state_worker_tx),
+            auto_read_dirty: Arc::new(AtomicBool::new(false)),
+        };
+
+        // Background task simulating central responses
+        tokio::spawn(async move {
+            let crc2 = Arc::new(AtomicU64::new(0));
+            let mut s_framed = tokio_util::codec::Framed::new(server_io, crate::codec::SatelCodec::new(crc2));
+            // 1. Read command 0xEE and reply with [0xEF, 0x08]
+            if let Some(Ok(_cmd)) = s_framed.next().await {
+                s_framed.send(vec![0xEF, 0x08]).await.unwrap();
+            }
+            // 2. Read command 0x80 and reply with [0xEF, 0x01]
+            if let Some(Ok(_cmd)) = s_framed.next().await {
+                s_framed.send(vec![0xEF, 0x01]).await.unwrap();
+            }
+        });
+
+        // 1. Exchange with expected_cmd = 0xEE -> reply is 0xEF 0x08
+        let res = worker.satel_connection_worker_exchange(
+            vec![0xEE, 5, 1],
+            0xEE,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            false,
+        ).await.unwrap();
+        assert_eq!(res, vec![0xEF, 0x08]);
+
+        // State worker should NOT have received any message for 0xEE + 0xEF!
+        assert!(state_worker_rx.try_recv().is_err());
+
+        // 2. Exchange with expected_cmd = 0x80 -> reply is 0xEF 0x01
+        let res2 = worker.satel_connection_worker_exchange(
+            vec![0x80, 1],
+            0x80,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            false,
+        ).await.unwrap();
+        assert_eq!(res2, vec![0xEF, 0x01]);
+
+        // State worker SHOULD receive the frame for 0x80!
+        let msg = state_worker_rx.try_recv().expect("Should notify state worker for non-0xEE command");
+        assert!(matches!(msg, StateWorkerMessage::Frame(f) if f == vec![0xEF, 0x01]));
     }
 }
