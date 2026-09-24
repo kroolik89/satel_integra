@@ -685,6 +685,23 @@ impl SatelIntegra {
             .and_then(|o| o.to_output_params()))
     }
 
+    /// Returns the cached output control capability from memory.
+    /// Returns `None` if output parameters have not been read yet.
+    pub fn output_control(&self, output_id: u16) -> Option<OutputControl> {
+        let state = self.state.read().ok()?;
+        state
+            .outputs
+            .get((output_id.wrapping_sub(1) % 256) as usize)
+            .and_then(|o| o.to_output_params())
+            .map(|p| p.control)
+    }
+
+    /// Returns whether the output is controllable based on cached parameters.
+    /// Returns `None` if output parameters have not been read yet.
+    pub fn is_output_controllable(&self, output_id: u16) -> Option<bool> {
+        self.output_control(output_id).map(|c| c.is_controllable())
+    }
+
     /// Queries the UTF-8 names of all outputs configured in the panel.
     /// Emits `SatelEvent::SyncStarted`, `SatelEvent::SyncProgress` per item, and `SatelEvent::SyncFinished`.
     /// When `extended_name_read` is enabled, also emits `SatelEvent::OutputParamsReceived` for each output.
@@ -2391,5 +2408,50 @@ mod tests {
         let ev = events.recv().await.unwrap();
         assert!(matches!(ev, SatelEvent::ZoneNameReceived { id: 1, .. }));
         assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_cached_output_control_helpers() {
+        let (client, _) = create_mock_client(Config::default());
+
+        // 1. Przed odczytem parametrów: None
+        assert_eq!(client.output_control(1), None);
+        assert_eq!(client.is_output_controllable(1), None);
+
+        // 2. Wyjście monostabilne (24, czasowe)
+        {
+            let mut state = client.state.write().unwrap();
+            let out = &mut state.outputs[0];
+            out.function = Some(OutputFunction::MonoSwitch);
+            out.duration = Some(Duration::from_millis(3000));
+            out.control = Some(OutputControl::Timed { duration: Some(Duration::from_millis(3000)) });
+        }
+        assert_eq!(
+            client.output_control(1),
+            Some(OutputControl::Timed { duration: Some(Duration::from_millis(3000)) })
+        );
+        assert_eq!(client.is_output_controllable(1), Some(true));
+
+        // 3. Wyjście bistabilne (25)
+        {
+            let mut state = client.state.write().unwrap();
+            let out = &mut state.outputs[1];
+            out.function = Some(OutputFunction::BiSwitch);
+            out.duration = None;
+            out.control = Some(OutputControl::Bistable);
+        }
+        assert_eq!(client.output_control(2), Some(OutputControl::Bistable));
+        assert_eq!(client.is_output_controllable(2), Some(true));
+
+        // 4. Wyjście niesterowalne (alarm włamania 1)
+        {
+            let mut state = client.state.write().unwrap();
+            let out = &mut state.outputs[2];
+            out.function = Some(OutputFunction::BurglaryAlarm);
+            out.duration = None;
+            out.control = Some(OutputControl::None);
+        }
+        assert_eq!(client.output_control(3), Some(OutputControl::None));
+        assert_eq!(client.is_output_controllable(3), Some(false));
     }
 }

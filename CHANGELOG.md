@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `get_zone_params(id)` / `get_cached_zone_params(id)`
     - `get_output_params(id)` / `get_cached_output_params(id)`
     - `get_partition_params(id)` / `get_cached_partition_params(id)`
+    - Cached output control helpers: `output_control(id) -> Option<OutputControl>` and `is_output_controllable(id) -> Option<bool>`.
   - New broadcast events: `SatelEvent::ZoneParamsReceived`, `SatelEvent::OutputParamsReceived`, `SatelEvent::PartitionParamsReceived`.
   - Scans (`get_all_zone_names`, `get_all_output_names`, `get_all_partition_names`) emit both `*NameReceived` and `*ParamsReceived` per position when `extended_name_read` is enabled, while `SyncProgress` tracks scanned positions.
 - Type Catalogs:
