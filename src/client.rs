@@ -3,9 +3,11 @@ use crate::command::SatelCommand;
 use crate::config::Config;
 use crate::error::SatelError;
 use crate::event::{SatelEvent, SyncCategory};
+use crate::output_catalog::{OutputControl, OutputFunction};
 use crate::parsers::{
     process_ethm_version, process_integra_version,
-    process_output_name, process_outputs_state, process_partition_name,
+    process_output_response, process_outputs_state,
+    process_partition_response,
     process_partitions_alarm, process_partitions_alarm_memory,
     process_partitions_armed_really, process_partitions_armed_suppressed,
     process_partitions_entry_time, process_partitions_exit_time_gt_10s,
@@ -15,23 +17,27 @@ use crate::parsers::{
     process_troubles_memory_part7, process_troubles_part1,
     process_troubles_part2, process_troubles_part3, process_troubles_part4,
     process_troubles_part5, process_troubles_part6, process_troubles_part7,
-    process_troubles_part8, process_zone_name, process_zone_temperature,
+    process_troubles_part8, process_zone_response,
+    process_zone_temperature,
     process_zones_alarm, process_zones_alarm_memory, process_zones_bypass,
     process_zones_long_violation_trouble, process_zones_no_violation_trouble,
     process_zones_tamper, process_zones_tamper_alarm,
     process_zones_tamper_alarm_memory, process_zones_violation,
 };
+use crate::partition_catalog::PartitionType;
 use crate::polling_worker::{SatelPollingWorker, TemperaturePollingTask};
 use crate::state::{
-    AutoReadReport, ConnectionStatistics, EthmVersion, IntegraVersion, OutputName, PartitionName, SatelState, SatelStateHandle,
-    SystemStatus, TemperatureSensorStatus, TroublesData, TroublesPart1Data, TroublesPart2Data,
+    AutoReadReport, ConnectionStatistics, EthmVersion, IntegraVersion, OutputName, OutputParams,
+    PartitionName, PartitionParams, SatelState, SatelStateHandle, SystemStatus,
+    TemperatureSensorStatus, TroublesData, TroublesPart1Data, TroublesPart2Data,
     TroublesPart3Data, TroublesPart4Data, TroublesPart5Data, TroublesPart6Data, TroublesPart7Data,
     TroublesPart8Data, TroublesMemoryPart2Data, TroublesMemoryPart3Data, TroublesMemoryPart5Data,
-    TroublesMemoryPart7Data, ZoneName, ZoneStatus, ZoneTemperature,
+    TroublesMemoryPart7Data, ZoneName, ZoneParams, ZoneStatus, ZoneTemperature,
 };
 use crate::worker::{InternalMessage, SatelCommunicationWorker};
+use crate::zone_catalog::ZoneReaction;
 use chrono::Local;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -46,6 +52,9 @@ pub struct SatelIntegra {
     pub(crate) worker: Arc<Mutex<Option<SatelCommunicationWorker>>>,
     pub(crate) event_tx: broadcast::Sender<SatelEvent>,
     pub(crate) auto_read_dirty: Arc<AtomicBool>,
+    pub(crate) session_zone_type: Arc<AtomicU8>,
+    pub(crate) session_output_type: Arc<AtomicU8>,
+    pub(crate) session_partition_type: Arc<AtomicU8>,
 }
 
 impl SatelIntegra {
@@ -55,8 +64,12 @@ impl SatelIntegra {
         let state = Arc::new(std::sync::RwLock::new(SatelState::new()));
         let (tx, rx) = mpsc::channel(100);
         let (event_tx, _) = broadcast::channel(1024);
+        let extended = config.extended_name_read;
         let config_arc = Arc::new(RwLock::new(config));
         let auto_read_dirty = Arc::new(AtomicBool::new(false));
+        let session_zone_type = Arc::new(AtomicU8::new(if extended { 5 } else { 1 }));
+        let session_output_type = Arc::new(AtomicU8::new(if extended { 17 } else { 4 }));
+        let session_partition_type = Arc::new(AtomicU8::new(if extended { 19 } else { 0 }));
 
         let worker = SatelCommunicationWorker {
             config: config_arc.clone(),
@@ -74,6 +87,9 @@ impl SatelIntegra {
             worker: Arc::new(Mutex::new(Some(worker))),
             event_tx,
             auto_read_dirty,
+            session_zone_type,
+            session_output_type,
+            session_partition_type,
         }
     }
 
@@ -85,6 +101,12 @@ impl SatelIntegra {
     /// Connects to the panel and spawns background tasks (actor worker, auto-requester, poller).
     pub async fn connect(&self) -> Result<(), SatelError> {
         self.config.read().unwrap().validate()?;
+        {
+            let extended = self.config.read().unwrap().extended_name_read;
+            self.session_zone_type.store(if extended { 5 } else { 1 }, Ordering::SeqCst);
+            self.session_output_type.store(if extended { 17 } else { 4 }, Ordering::SeqCst);
+            self.session_partition_type.store(if extended { 19 } else { 0 }, Ordering::SeqCst);
+        }
 
         let maybe_worker = {
             let mut worker_lock = self.worker.lock().unwrap();
@@ -154,7 +176,7 @@ impl SatelIntegra {
     /// is automatically re-sent to the panel on the next keep-alive tick without reconnecting.
     pub fn hot_reload_config(&self, mut new_config: Config) -> Result<(), SatelError> {
         new_config.validate()?;
-        let mask_changed = {
+        let (mask_changed, extended_changed, new_extended) = {
             let mut guard = self.config.write().unwrap();
             // Preserve connection parameters
             new_config.connection = guard.connection.clone();
@@ -165,11 +187,19 @@ impl SatelIntegra {
             let new_mask = SatelCommunicationWorker::satel_connection_worker_connect_build_push_mask(&new_config, true);
             let changed = old_mask != new_mask;
 
+            let ext_changed = guard.extended_name_read != new_config.extended_name_read;
+            let ext = new_config.extended_name_read;
+
             *guard = new_config;
-            changed
+            (changed, ext_changed, ext)
         };
         if mask_changed {
             self.auto_read_dirty.store(true, Ordering::SeqCst);
+        }
+        if extended_changed {
+            self.session_zone_type.store(if new_extended { 5 } else { 1 }, Ordering::SeqCst);
+            self.session_output_type.store(if new_extended { 17 } else { 4 }, Ordering::SeqCst);
+            self.session_partition_type.store(if new_extended { 19 } else { 0 }, Ordering::SeqCst);
         }
         let _ = self.event_tx.send(SatelEvent::ConfigUpdated);
         Ok(())
@@ -321,53 +351,122 @@ impl SatelIntegra {
         Ok(state.integra_version.clone())
     }
 
-    /// Queries the UTF-8 name of a zone (0xEE type 1).
-    pub async fn get_zone_name(&self, zone_id: u16) -> Result<ZoneName, SatelError> {
-        tracing::info!("Querying zone name #{}", zone_id);
+    async fn query_zone_internal(&self, zone_id: u16) -> Result<(ZoneName, Option<ZoneParams>), SatelError> {
+        let extended = self.config.read().unwrap().extended_name_read;
+        let session_type = self.session_zone_type.load(Ordering::SeqCst);
+        let types_to_try: Vec<u8> = if extended {
+            if session_type == 5 {
+                vec![5, 1]
+            } else {
+                vec![1]
+            }
+        } else {
+            vec![1]
+        };
 
-        let device_type: u8 = 1;
         let device_id: u8 = if zone_id == 256 { 0 } else { zone_id as u8 };
 
-        let cmd = vec![
-            SatelCommand::ReadDeviceName.to_byte(),
-            device_type,
-            device_id,
-        ];
-        let response = self.exchange(cmd, None, None).await?;
+        for &dev_type in &types_to_try {
+            let cmd = vec![
+                SatelCommand::ReadDeviceName.to_byte(),
+                dev_type,
+                device_id,
+            ];
+            let response = self.exchange(cmd, None, None).await?;
 
-        if !response.is_empty() && response[0] == SatelCommand::ResultCode.to_byte() {
-            // Panel returned 0xEF (ResultCode) indicating the requested zone is not configured or unassigned
-            let empty_name = ZoneName {
-                name: String::new(),
-                read_at: chrono::Local::now(),
-            };
-            {
-                let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
-                if let Some(zone) = state.zones.get_mut((zone_id.wrapping_sub(1) % 256) as usize) {
-                    zone.zone_name = String::new();
-                    zone.zone_name_read_at = empty_name.read_at;
-                }
+            if !response.is_empty() && response[0] == SatelCommand::ResultCode.to_byte() {
+                // Centrala odrzuciła zapytanie (0xEF) — próbujemy niższy typ w łańcuchu
+                continue;
             }
-            return Ok(empty_name);
+
+            if !response.is_empty() && response[0] == SatelCommand::ReadDeviceName.to_byte() {
+                if dev_type < session_type {
+                    self.session_zone_type.store(dev_type, Ordering::SeqCst);
+                    tracing::info!("Session zone query type downgraded to {}", dev_type);
+                }
+
+                let (id, s_name, params) = process_zone_response(&response)?;
+
+                {
+                    let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+                    if let Some(zone) = state.zones.get_mut((id.wrapping_sub(1) % 256) as usize) {
+                        zone.zone_name = s_name.name.clone();
+                        zone.zone_name_read_at = s_name.read_at;
+                        zone.reaction = Some(params.reaction);
+                        zone.partition = params.partition;
+                        zone.params_read_at = Some(params.read_at);
+                    }
+                }
+
+                return Ok((s_name, Some(params)));
+            } else {
+                return Err(SatelError::InvalidFrame);
+            }
         }
 
-        let (id, s_name) = process_zone_name(&response)?;
-
+        // Wszystkie próbowane typy zwróciły ResultCode (0xEF) — pozycja nieskonfigurowana
+        let now = chrono::Local::now();
+        let empty_name = ZoneName {
+            name: String::new(),
+            read_at: now,
+        };
         {
             let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
-            if let Some(zone) = state.zones.get_mut((id.wrapping_sub(1) % 256) as usize) {
-                zone.zone_name = s_name.name.clone();
-                zone.zone_name_read_at = s_name.read_at;
+            if let Some(zone) = state.zones.get_mut((zone_id.wrapping_sub(1) % 256) as usize) {
+                zone.zone_name = String::new();
+                zone.zone_name_read_at = now;
+                zone.reaction = None;
+                zone.partition = None;
+                zone.params_read_at = Some(now);
             }
         }
+        Ok((empty_name, None))
+    }
 
-        let _ = self.event_tx.send(SatelEvent::ZoneNameReceived {
-            id,
-            name: s_name.name.clone(),
-        });
-
-        tracing::info!("Retrieved zone #{} name: {}", id, s_name.name);
+    /// Queries the UTF-8 name of a zone (0xEE).
+    /// If `extended_name_read` is enabled, also emits `SatelEvent::ZoneParamsReceived`.
+    pub async fn get_zone_name(&self, zone_id: u16) -> Result<ZoneName, SatelError> {
+        tracing::info!("Querying zone name #{}", zone_id);
+        let (s_name, maybe_params) = self.query_zone_internal(zone_id).await?;
+        if let Some(params) = maybe_params {
+            let _ = self.event_tx.send(SatelEvent::ZoneNameReceived {
+                id: zone_id,
+                name: s_name.name.clone(),
+            });
+            if self.config.read().unwrap().extended_name_read {
+                let _ = self.event_tx.send(SatelEvent::ZoneParamsReceived {
+                    id: zone_id,
+                    params,
+                });
+            }
+        }
+        tracing::info!("Retrieved zone #{} name: {}", zone_id, s_name.name);
         Ok(s_name)
+    }
+
+    /// Queries the parameters of a zone (reaction type, partition).
+    /// Emits `SatelEvent::ZoneNameReceived` and `SatelEvent::ZoneParamsReceived`.
+    pub async fn get_zone_params(&self, zone_id: u16) -> Result<ZoneParams, SatelError> {
+        tracing::info!("Querying zone params #{}", zone_id);
+        let (s_name, maybe_params) = self.query_zone_internal(zone_id).await?;
+        if let Some(params) = maybe_params {
+            let _ = self.event_tx.send(SatelEvent::ZoneNameReceived {
+                id: zone_id,
+                name: s_name.name,
+            });
+            let _ = self.event_tx.send(SatelEvent::ZoneParamsReceived {
+                id: zone_id,
+                params: params.clone(),
+            });
+            Ok(params)
+        } else {
+            Ok(ZoneParams {
+                zone_id,
+                reaction: ZoneReaction::from_code(0),
+                partition: None,
+                read_at: s_name.read_at,
+            })
+        }
     }
 
     /// Returns the cached zone name from memory.
@@ -379,6 +478,15 @@ impl SatelIntegra {
             .map(|z| z.to_zone_name()))
     }
 
+    /// Returns the cached zone parameters from memory.
+    pub fn get_cached_zone_params(&self, zone_id: u16) -> Result<Option<ZoneParams>, SatelError> {
+        let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
+        Ok(state
+            .zones
+            .get((zone_id.wrapping_sub(1) % 256) as usize)
+            .and_then(|z| z.to_zone_params()))
+    }
+
     /// Returns the most recently configured auto-read push notification report from memory.
     pub fn auto_read_report(&self) -> Result<Option<AutoReadReport>, SatelError> {
         let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
@@ -387,6 +495,7 @@ impl SatelIntegra {
 
     /// Queries the UTF-8 names of all zones configured in the panel.
     /// Emits `SatelEvent::SyncStarted`, `SatelEvent::SyncProgress` per item, and `SatelEvent::SyncFinished`.
+    /// When `extended_name_read` is enabled, also emits `SatelEvent::ZoneParamsReceived` for each zone.
     /// Returns `Err(SatelError::PanelVersionUnknown)` if Integra version has not been retrieved yet.
     /// Returns `Ok(true)` after querying all zones (1..=io_count).
     pub async fn get_all_zone_names(&self) -> Result<bool, SatelError> {
@@ -439,52 +548,123 @@ impl SatelIntegra {
         Ok(true)
     }
 
-    /// Queries the UTF-8 name of an output (0xEE type 4).
-    pub async fn get_output_name(&self, output_id: u16) -> Result<OutputName, SatelError> {
-        tracing::info!("Querying output name #{}", output_id);
+    async fn query_output_internal(&self, output_id: u16) -> Result<(OutputName, Option<OutputParams>), SatelError> {
+        let extended = self.config.read().unwrap().extended_name_read;
+        let session_type = self.session_output_type.load(Ordering::SeqCst);
+        let types_to_try: Vec<u8> = if extended {
+            if session_type == 17 {
+                vec![17, 4]
+            } else {
+                vec![4]
+            }
+        } else {
+            vec![4]
+        };
 
-        let device_type: u8 = 4;
         let device_id: u8 = if output_id == 256 { 0 } else { output_id as u8 };
 
-        let cmd = vec![
-            SatelCommand::ReadDeviceName.to_byte(),
-            device_type,
-            device_id,
-        ];
-        let response = self.exchange(cmd, None, None).await?;
+        for &dev_type in &types_to_try {
+            let cmd = vec![
+                SatelCommand::ReadDeviceName.to_byte(),
+                dev_type,
+                device_id,
+            ];
+            let response = self.exchange(cmd, None, None).await?;
 
-        if !response.is_empty() && response[0] == SatelCommand::ResultCode.to_byte() {
-            let empty_name = OutputName {
-                name: String::new(),
-                read_at: chrono::Local::now(),
-            };
-            {
-                let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
-                if let Some(output) = state.outputs.get_mut((output_id.wrapping_sub(1) % 256) as usize) {
-                    output.name = String::new();
-                    output.name_read_at = empty_name.read_at;
-                }
+            if !response.is_empty() && response[0] == SatelCommand::ResultCode.to_byte() {
+                continue;
             }
-            return Ok(empty_name);
+
+            if !response.is_empty() && response[0] == SatelCommand::ReadDeviceName.to_byte() {
+                if dev_type < session_type {
+                    self.session_output_type.store(dev_type, Ordering::SeqCst);
+                    tracing::info!("Session output query type downgraded to {}", dev_type);
+                }
+
+                let (id, s_name, params) = process_output_response(&response)?;
+
+                {
+                    let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+                    if let Some(output) = state.outputs.get_mut((id.wrapping_sub(1) % 256) as usize) {
+                        output.name = s_name.name.clone();
+                        output.name_read_at = s_name.read_at;
+                        output.function = Some(params.function);
+                        output.duration = params.duration;
+                        output.control = Some(params.control.clone());
+                        output.params_read_at = Some(params.read_at);
+                    }
+                }
+
+                return Ok((s_name, Some(params)));
+            } else {
+                return Err(SatelError::InvalidFrame);
+            }
         }
 
-        let (id, s_name) = process_output_name(&response)?;
-
+        let now = chrono::Local::now();
+        let empty_name = OutputName {
+            name: String::new(),
+            read_at: now,
+        };
         {
             let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
-            if let Some(output) = state.outputs.get_mut((id.wrapping_sub(1) % 256) as usize) {
-                output.name = s_name.name.clone();
-                output.name_read_at = s_name.read_at;
+            if let Some(output) = state.outputs.get_mut((output_id.wrapping_sub(1) % 256) as usize) {
+                output.name = String::new();
+                output.name_read_at = now;
+                output.function = None;
+                output.duration = None;
+                output.control = None;
+                output.params_read_at = Some(now);
             }
         }
+        Ok((empty_name, None))
+    }
 
-        let _ = self.event_tx.send(SatelEvent::OutputNameReceived {
-            id,
-            name: s_name.name.clone(),
-        });
-
-        tracing::info!("Retrieved output #{} name: {}", id, s_name.name);
+    /// Queries the UTF-8 name of an output (0xEE).
+    /// If `extended_name_read` is enabled, also emits `SatelEvent::OutputParamsReceived`.
+    pub async fn get_output_name(&self, output_id: u16) -> Result<OutputName, SatelError> {
+        tracing::info!("Querying output name #{}", output_id);
+        let (s_name, maybe_params) = self.query_output_internal(output_id).await?;
+        if let Some(params) = maybe_params {
+            let _ = self.event_tx.send(SatelEvent::OutputNameReceived {
+                id: output_id,
+                name: s_name.name.clone(),
+            });
+            if self.config.read().unwrap().extended_name_read {
+                let _ = self.event_tx.send(SatelEvent::OutputParamsReceived {
+                    id: output_id,
+                    params,
+                });
+            }
+        }
+        tracing::info!("Retrieved output #{} name: {}", output_id, s_name.name);
         Ok(s_name)
+    }
+
+    /// Queries the parameters of an output (function, duration, control capability).
+    /// Emits `SatelEvent::OutputNameReceived` and `SatelEvent::OutputParamsReceived`.
+    pub async fn get_output_params(&self, output_id: u16) -> Result<OutputParams, SatelError> {
+        tracing::info!("Querying output params #{}", output_id);
+        let (s_name, maybe_params) = self.query_output_internal(output_id).await?;
+        if let Some(params) = maybe_params {
+            let _ = self.event_tx.send(SatelEvent::OutputNameReceived {
+                id: output_id,
+                name: s_name.name,
+            });
+            let _ = self.event_tx.send(SatelEvent::OutputParamsReceived {
+                id: output_id,
+                params: params.clone(),
+            });
+            Ok(params)
+        } else {
+            Ok(OutputParams {
+                output_id,
+                function: OutputFunction::Unused,
+                duration: None,
+                control: OutputControl::None,
+                read_at: s_name.read_at,
+            })
+        }
     }
 
     /// Returns the cached output name from memory.
@@ -496,8 +676,18 @@ impl SatelIntegra {
             .map(|o| o.to_output_name()))
     }
 
+    /// Returns the cached output parameters from memory.
+    pub fn get_cached_output_params(&self, output_id: u16) -> Result<Option<OutputParams>, SatelError> {
+        let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
+        Ok(state
+            .outputs
+            .get((output_id.wrapping_sub(1) % 256) as usize)
+            .and_then(|o| o.to_output_params()))
+    }
+
     /// Queries the UTF-8 names of all outputs configured in the panel.
     /// Emits `SatelEvent::SyncStarted`, `SatelEvent::SyncProgress` per item, and `SatelEvent::SyncFinished`.
+    /// When `extended_name_read` is enabled, also emits `SatelEvent::OutputParamsReceived` for each output.
     /// Returns `Err(SatelError::PanelVersionUnknown)` if Integra version has not been retrieved yet.
     /// Returns `Ok(true)` after querying all outputs (1..=io_count).
     pub async fn get_all_output_names(&self) -> Result<bool, SatelError> {
@@ -550,52 +740,130 @@ impl SatelIntegra {
         Ok(true)
     }
 
-    /// Queries the UTF-8 name of a partition (0xEE type 0).
-    pub async fn get_partition_name(&self, partition_id: u16) -> Result<PartitionName, SatelError> {
-        tracing::info!("Querying partition name #{}", partition_id);
+    async fn query_partition_internal(&self, partition_id: u16) -> Result<(PartitionName, Option<PartitionParams>), SatelError> {
+        let extended = self.config.read().unwrap().extended_name_read;
+        let session_type = self.session_partition_type.load(Ordering::SeqCst);
+        let types_to_try: Vec<u8> = if extended {
+            match session_type {
+                19 => vec![19, 18, 16, 0],
+                18 => vec![18, 16, 0],
+                16 => vec![16, 0],
+                _ => vec![0],
+            }
+        } else {
+            vec![0]
+        };
 
-        let device_type: u8 = 0;
         let device_id: u8 = partition_id as u8;
 
-        let cmd = vec![
-            SatelCommand::ReadDeviceName.to_byte(),
-            device_type,
-            device_id,
-        ];
-        let response = self.exchange(cmd, None, None).await?;
+        for &dev_type in &types_to_try {
+            let cmd = vec![
+                SatelCommand::ReadDeviceName.to_byte(),
+                dev_type,
+                device_id,
+            ];
+            let response = self.exchange(cmd, None, None).await?;
 
-        if !response.is_empty() && response[0] == SatelCommand::ResultCode.to_byte() {
-            let empty_name = PartitionName {
-                name: String::new(),
-                read_at: chrono::Local::now(),
-            };
-            {
-                let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
-                if let Some(partition) = state.partitions.get_mut((partition_id.wrapping_sub(1) % 32) as usize) {
-                    partition.name = String::new();
-                    partition.name_read_at = empty_name.read_at;
-                }
+            if !response.is_empty() && response[0] == SatelCommand::ResultCode.to_byte() {
+                continue;
             }
-            return Ok(empty_name);
+
+            if !response.is_empty() && response[0] == SatelCommand::ReadDeviceName.to_byte() {
+                if dev_type < session_type {
+                    self.session_partition_type.store(dev_type, Ordering::SeqCst);
+                    tracing::info!("Session partition query type downgraded to {}", dev_type);
+                }
+
+                let (id, s_name, params) = process_partition_response(&response)?;
+
+                {
+                    let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
+                    if let Some(partition) = state.partitions.get_mut((id.wrapping_sub(1) % 32) as usize) {
+                        partition.name = s_name.name.clone();
+                        partition.name_read_at = s_name.read_at;
+                        partition.partition_type = Some(params.partition_type);
+                        partition.object_number = params.object_number;
+                        partition.options = params.options;
+                        partition.auto_arm_defer = params.auto_arm_defer;
+                        partition.dependent_partitions = params.dependent_partitions;
+                        partition.params_read_at = Some(params.read_at);
+                    }
+                }
+
+                return Ok((s_name, Some(params)));
+            } else {
+                return Err(SatelError::InvalidFrame);
+            }
         }
 
-        let (id, partition_name) = process_partition_name(&response)?;
-
+        let now = chrono::Local::now();
+        let empty_name = PartitionName {
+            name: String::new(),
+            read_at: now,
+        };
         {
             let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
-            if let Some(partition) = state.partitions.get_mut((id.wrapping_sub(1) % 32) as usize) {
-                partition.name = partition_name.name.clone();
-                partition.name_read_at = partition_name.read_at;
+            if let Some(partition) = state.partitions.get_mut((partition_id.wrapping_sub(1) % 32) as usize) {
+                partition.name = String::new();
+                partition.name_read_at = now;
+                partition.partition_type = None;
+                partition.object_number = None;
+                partition.options = None;
+                partition.auto_arm_defer = None;
+                partition.dependent_partitions = None;
+                partition.params_read_at = Some(now);
             }
         }
+        Ok((empty_name, None))
+    }
 
-        let _ = self.event_tx.send(SatelEvent::PartitionNameReceived {
-            id,
-            name: partition_name.name.clone(),
-        });
+    /// Queries the UTF-8 name of a partition (0xEE).
+    /// If `extended_name_read` is enabled, also emits `SatelEvent::PartitionParamsReceived`.
+    pub async fn get_partition_name(&self, partition_id: u16) -> Result<PartitionName, SatelError> {
+        tracing::info!("Querying partition name #{}", partition_id);
+        let (s_name, maybe_params) = self.query_partition_internal(partition_id).await?;
+        if let Some(params) = maybe_params {
+            let _ = self.event_tx.send(SatelEvent::PartitionNameReceived {
+                id: partition_id,
+                name: s_name.name.clone(),
+            });
+            if self.config.read().unwrap().extended_name_read {
+                let _ = self.event_tx.send(SatelEvent::PartitionParamsReceived {
+                    id: partition_id,
+                    params,
+                });
+            }
+        }
+        tracing::info!("Retrieved partition #{} name: {}", partition_id, s_name.name);
+        Ok(s_name)
+    }
 
-        tracing::info!("Retrieved partition #{} name: {}", id, partition_name.name);
-        Ok(partition_name)
+    /// Queries the parameters of a partition (type, object, options, timers, dependencies).
+    /// Emits `SatelEvent::PartitionNameReceived` and `SatelEvent::PartitionParamsReceived`.
+    pub async fn get_partition_params(&self, partition_id: u16) -> Result<PartitionParams, SatelError> {
+        tracing::info!("Querying partition params #{}", partition_id);
+        let (s_name, maybe_params) = self.query_partition_internal(partition_id).await?;
+        if let Some(params) = maybe_params {
+            let _ = self.event_tx.send(SatelEvent::PartitionNameReceived {
+                id: partition_id,
+                name: s_name.name,
+            });
+            let _ = self.event_tx.send(SatelEvent::PartitionParamsReceived {
+                id: partition_id,
+                params: params.clone(),
+            });
+            Ok(params)
+        } else {
+            Ok(PartitionParams {
+                partition_id,
+                partition_type: PartitionType::Normal,
+                object_number: None,
+                options: None,
+                auto_arm_defer: None,
+                dependent_partitions: None,
+                read_at: s_name.read_at,
+            })
+        }
     }
 
     /// Returns the cached partition name from memory.
@@ -610,8 +878,21 @@ impl SatelIntegra {
             .map(|p| p.to_partition_name()))
     }
 
+    /// Returns the cached partition parameters from memory.
+    pub fn get_cached_partition_params(
+        &self,
+        partition_id: u16,
+    ) -> Result<Option<PartitionParams>, SatelError> {
+        let state = self.state.read().map_err(|_| SatelError::StatePoisoned)?;
+        Ok(state
+            .partitions
+            .get((partition_id.wrapping_sub(1) % 32) as usize)
+            .and_then(|p| p.to_partition_params()))
+    }
+
     /// Queries the UTF-8 names of all partitions configured in the panel.
     /// Emits `SatelEvent::SyncStarted`, `SatelEvent::SyncProgress` per item, and `SatelEvent::SyncFinished`.
+    /// When `extended_name_read` is enabled, also emits `SatelEvent::PartitionParamsReceived` for each partition.
     /// Returns `Err(SatelError::PanelVersionUnknown)` if Integra version has not been retrieved yet.
     /// Returns `Ok(true)` after querying all partitions (1..=partition_count).
     pub async fn get_all_partition_names(&self) -> Result<bool, SatelError> {
@@ -1895,5 +2176,220 @@ mod tests {
         assert_eq!(mask12, vec![0u8; 12]);
         assert_eq!(mask14.len(), 14);
         assert_eq!(mask14, vec![0u8; 14]);
+    }
+
+    #[test]
+    fn test_hot_reload_extended_name_read_resets_session_types() {
+        let client = SatelIntegra::new(Config::default());
+        assert_eq!(client.session_zone_type.load(Ordering::SeqCst), 5);
+        assert_eq!(client.session_output_type.load(Ordering::SeqCst), 17);
+        assert_eq!(client.session_partition_type.load(Ordering::SeqCst), 19);
+
+        // Simulate downgrade in session
+        client.session_zone_type.store(1, Ordering::SeqCst);
+        client.session_output_type.store(4, Ordering::SeqCst);
+        client.session_partition_type.store(0, Ordering::SeqCst);
+
+        // Hot reload disabling extended_name_read
+        let mut cfg = client.get_config();
+        cfg.extended_name_read = false;
+        client.hot_reload_config(cfg).unwrap();
+
+        assert_eq!(client.session_zone_type.load(Ordering::SeqCst), 1);
+        assert_eq!(client.session_output_type.load(Ordering::SeqCst), 4);
+        assert_eq!(client.session_partition_type.load(Ordering::SeqCst), 0);
+
+        // Hot reload re-enabling extended_name_read resets session types to highest
+        let mut cfg2 = client.get_config();
+        cfg2.extended_name_read = true;
+        client.hot_reload_config(cfg2).unwrap();
+
+        assert_eq!(client.session_zone_type.load(Ordering::SeqCst), 5);
+        assert_eq!(client.session_output_type.load(Ordering::SeqCst), 17);
+        assert_eq!(client.session_partition_type.load(Ordering::SeqCst), 19);
+    }
+
+    fn create_mock_client(config: Config) -> (SatelIntegra, mpsc::Receiver<InternalMessage>) {
+        let state = Arc::new(RwLock::new(SatelState::new()));
+        let (tx, rx) = mpsc::channel(100);
+        let (event_tx, _) = broadcast::channel(1024);
+        let extended = config.extended_name_read;
+        let config_arc = Arc::new(RwLock::new(config));
+        let auto_read_dirty = Arc::new(AtomicBool::new(false));
+        let session_zone_type = Arc::new(AtomicU8::new(if extended { 5 } else { 1 }));
+        let session_output_type = Arc::new(AtomicU8::new(if extended { 17 } else { 4 }));
+        let session_partition_type = Arc::new(AtomicU8::new(if extended { 19 } else { 0 }));
+
+        let client = SatelIntegra {
+            tx,
+            state,
+            config: config_arc,
+            worker: Arc::new(Mutex::new(None)),
+            event_tx,
+            auto_read_dirty,
+            session_zone_type,
+            session_output_type,
+            session_partition_type,
+        };
+        (client, rx)
+    }
+
+    fn pad_test_name(s: &str) -> [u8; 16] {
+        let (encoded, _, _) = encoding_rs::WINDOWS_1250.encode(s);
+        let mut buf = [b' '; 16];
+        let len = encoded.len().min(16);
+        buf[..len].copy_from_slice(&encoded[..len]);
+        buf
+    }
+
+    #[tokio::test]
+    async fn test_zone_fallback_5_to_1() {
+        let (client, mut rx) = create_mock_client(Config::default());
+        let mut events = client.subscribe();
+
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                if let InternalMessage::ExchangeStandard { data, response_tx, .. } = msg {
+                    let dev_type = data[1];
+                    let dev_id = data[2];
+                    if dev_type == 5 {
+                        // Centrala odrzuca typ 5
+                        let _ = response_tx.send(Ok(vec![0xEF, 0xFF]));
+                    } else if dev_type == 1 {
+                        // Centrala akceptuje typ 1
+                        let mut resp = vec![0xEE, 1, dev_id, 3]; // reaction 3: InteriorDelayed
+                        resp.extend_from_slice(&pad_test_name("Kuchnia"));
+                        let _ = response_tx.send(Ok(resp));
+                    }
+                }
+            }
+        });
+
+        // 1. Pierwsze zapytanie — powinno spróbować 5, dostać 0xEF, zejść do 1 i zapamiętać 1
+        let res = client.get_zone_name(1).await.unwrap();
+        assert_eq!(res.name, "Kuchnia");
+        assert_eq!(client.session_zone_type.load(Ordering::SeqCst), 1);
+
+        // Zdarzenia: ZoneNameReceived oraz ZoneParamsReceived (bo extended_name_read = true)
+        let ev1 = events.recv().await.unwrap();
+        assert!(matches!(ev1, SatelEvent::ZoneNameReceived { id: 1, ref name } if name == "Kuchnia"));
+        let ev2 = events.recv().await.unwrap();
+        assert!(matches!(ev2, SatelEvent::ZoneParamsReceived { id: 1, ref params } if params.reaction == ZoneReaction::InteriorDelayed && params.partition == None));
+
+        // 2. Kolejne zapytanie (np. zone 2) powinno od razu użyć typu 1 bez próbowania 5
+        let res2 = client.get_zone_name(2).await.unwrap();
+        assert_eq!(res2.name, "Kuchnia");
+        assert_eq!(client.session_zone_type.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_output_fallback_17_to_4() {
+        let (client, mut rx) = create_mock_client(Config::default());
+
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                if let InternalMessage::ExchangeStandard { data, response_tx, .. } = msg {
+                    let dev_type = data[1];
+                    let dev_id = data[2];
+                    if dev_type == 17 {
+                        let _ = response_tx.send(Ok(vec![0xEF, 0xFF]));
+                    } else if dev_type == 4 {
+                        let mut resp = vec![0xEE, 4, dev_id, 24]; // MonoSwitch
+                        resp.extend_from_slice(&pad_test_name("Syrena"));
+                        let _ = response_tx.send(Ok(resp));
+                    }
+                }
+            }
+        });
+
+        let out = client.get_output_name(1).await.unwrap();
+        assert_eq!(out.name, "Syrena");
+        assert_eq!(client.session_output_type.load(Ordering::SeqCst), 4);
+
+        let cached_params = client.get_cached_output_params(1).unwrap().unwrap();
+        assert_eq!(cached_params.function, OutputFunction::MonoSwitch);
+        assert_eq!(cached_params.duration, None);
+        assert_eq!(cached_params.control, OutputControl::Timed { duration: None });
+    }
+
+    #[tokio::test]
+    async fn test_partition_fallback_19_to_16() {
+        let (client, mut rx) = create_mock_client(Config::default());
+
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                if let InternalMessage::ExchangeStandard { data, response_tx, .. } = msg {
+                    let dev_type = data[1];
+                    let dev_id = data[2];
+                    if dev_type == 19 || dev_type == 18 {
+                        let _ = response_tx.send(Ok(vec![0xEF, 0xFF]));
+                    } else if dev_type == 16 {
+                        let mut resp = vec![0xEE, 16, dev_id, 1]; // TimedBlocking
+                        resp.extend_from_slice(&pad_test_name("Strefa 1"));
+                        resp.push(3); // object 3
+                        let _ = response_tx.send(Ok(resp));
+                    }
+                }
+            }
+        });
+
+        let part = client.get_partition_name(1).await.unwrap();
+        assert_eq!(part.name, "Strefa 1");
+        assert_eq!(client.session_partition_type.load(Ordering::SeqCst), 16);
+
+        let params = client.get_cached_partition_params(1).unwrap().unwrap();
+        assert_eq!(params.partition_type, PartitionType::TimedBlocking);
+        assert_eq!(params.object_number, Some(3));
+        assert_eq!(params.options, None);
+    }
+
+    #[tokio::test]
+    async fn test_unconfigured_item_does_not_downgrade_session_type() {
+        let (client, mut rx) = create_mock_client(Config::default());
+
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                if let InternalMessage::ExchangeStandard { response_tx, .. } = msg {
+                    // Wszystkie typy zwracają 0xEF
+                    let _ = response_tx.send(Ok(vec![0xEF, 0xFF]));
+                }
+            }
+        });
+
+        assert_eq!(client.session_zone_type.load(Ordering::SeqCst), 5);
+        let res = client.get_zone_name(100).await.unwrap();
+        assert_eq!(res.name, "");
+        // Typ sesji nie powinien zostać obniżony, bo odmowa dotyczyła nieistniejącej strefy
+        assert_eq!(client.session_zone_type.load(Ordering::SeqCst), 5);
+        assert_eq!(client.get_cached_zone_params(100).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_extended_name_read_false_behavior() {
+        let mut cfg = Config::default();
+        cfg.extended_name_read = false;
+        let (client, mut rx) = create_mock_client(cfg);
+        let mut events = client.subscribe();
+
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                if let InternalMessage::ExchangeStandard { data, response_tx, .. } = msg {
+                    let dev_type = data[1];
+                    let dev_id = data[2];
+                    assert_eq!(dev_type, 1, "Should only query type 1 when extended_name_read is false");
+                    let mut resp = vec![0xEE, 1, dev_id, 0];
+                    resp.extend_from_slice(&pad_test_name("Wejscie 1"));
+                    let _ = response_tx.send(Ok(resp));
+                }
+            }
+        });
+
+        let res = client.get_zone_name(1).await.unwrap();
+        assert_eq!(res.name, "Wejscie 1");
+
+        // Powinno nadejść tylko ZoneNameReceived, BEZ ZoneParamsReceived
+        let ev = events.recv().await.unwrap();
+        assert!(matches!(ev, SatelEvent::ZoneNameReceived { id: 1, .. }));
+        assert!(events.try_recv().is_err());
     }
 }

@@ -43,9 +43,12 @@ pub mod command;
 pub mod config;
 pub mod error;
 pub mod event;
+pub mod output_catalog;
 pub mod parsers;
+pub mod partition_catalog;
 pub mod state;
 pub mod trouble_catalog;
+pub mod zone_catalog;
 
 // --- Re-exports of primary public types ---
 pub use client::SatelIntegra;
@@ -54,17 +57,23 @@ pub use command::{SatelCommand, SatelResult};
 pub use config::{Config, ConnectionConfig, TemperatureProbe, MIN_UNBLOCK_AFTER_CYCLES};
 pub use error::SatelError;
 pub use event::{SatelEvent, SyncCategory};
+pub use output_catalog::{OutputControl, OutputFunction, OutputFunctionDescriptor};
+pub use partition_catalog::{
+    AutoArmDeferStatus, AutoArmDeferTimer, DependentPartitions, PartitionOptions, PartitionType,
+    PartitionTypeDescriptor,
+};
 pub use state::{
     AutoReadItemState, AutoReadItemStatus, AutoReadReport, ConnectionState, ConnectionStatistics,
     ConnectionStatus, ConnectionTelemetry, ConnectionType, EthmCapabilities, EthmPtsaTroubles,
     EthmVersion, GsmModuleTroubles, IntegraVersion, MainBoardTroubles, Output, OutputName,
-    Partition, PartitionName, SatelState, SatelStateHandle, StatsMark, SystemStatus,
-    TemperatureSensorStatus, TroubleType, TroublesData, TroublesPart1Data, TroublesPart2Data,
-    TroublesPart3Data, TroublesPart4Data, TroublesPart5Data, TroublesPart6Data, TroublesPart7Data,
-    TroublesPart8Data, Zone, ZoneName, ZoneStatus, ZoneTemperature, STATS_MIN_NON_PING_FRAMES,
-    statistics_changed,
+    OutputParams, Partition, PartitionName, PartitionParams, SatelState, SatelStateHandle, StatsMark,
+    SystemStatus, TemperatureSensorStatus, TroubleType, TroublesData, TroublesPart1Data,
+    TroublesPart2Data, TroublesPart3Data, TroublesPart4Data, TroublesPart5Data, TroublesPart6Data,
+    TroublesPart7Data, TroublesPart8Data, Zone, ZoneName, ZoneParams, ZoneStatus, ZoneTemperature,
+    STATS_MIN_NON_PING_FRAMES, statistics_changed,
 };
 pub use trouble_catalog::{TroubleAddress, TroubleAddressing, TroubleDescriptor, TroubleDomain};
+pub use zone_catalog::{ZoneKind, ZoneReaction, ZoneReactionDescriptor};
 
 use std::sync::Once;
 

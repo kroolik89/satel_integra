@@ -14,7 +14,19 @@ The library enables full integration and control of the security system via ETHM
 *   **Smart Sensor Blocking:** A built-in self-diagnostic and query queue protection system (e.g., during failures of ABAX 2 wireless temperature sensors). Damaged probes are temporarily isolated to prevent blocking communication with the panel (Timeouts).
 *   **Full system control:** Native API enabling arming and disarming partitions (including night modes and zero exit delay), output control (ON/OFF/TOGGLE), clearing alarm memory, and RTC system time synchronization.
 *   **Flexible authorization management (PIN):** The ability to define a global PIN code for background operations (e.g., automations), as well as dynamic authorization of single commands with individual user passwords (ideal for web/mobile apps).
+*   **Extended Device Parameters & Type Catalogs (1.9.0+):** Command 0xEE reads not only object names but also internal reaction types (`ZoneReaction`), output functions (`OutputFunction`), control modes (`OutputControl`), and partition parameters (`PartitionType`, `PartitionOptions`, `DependentPartitions`). An automatic fallback mechanism transparently handles older panel firmwares without failing sync scans.
 *   **Software state inversion:** A unique option to configure logical inversion of readings (e.g., tamper, violation, troubles) at the client level, facilitating integration with unusually wired sensors without the need to change DLOADX settings.
+
+## 🏷️ Extended Parameter Discovery & Catalogs (v1.9.0)
+
+When `extended_name_read: true` (default), the client queries device parameters alongside UTF-8 names:
+* **Zones (Inputs):** Reaction type (0..97) with `ZoneKind` categorization and partition assignment.
+* **Outputs:** Function (0..123) with controllability assessment (`is_controllable()`), duration, and mode (`Timed`, `Bistable`, `Unknown`, `None`).
+* **Partitions:** Partition type (0..3), object assignment, options bitmask, auto-arm defer timer, and dependent partitions mask.
+
+If the connected panel firmware rejects extended frame queries, the client automatically downgrades to basic query types (5 → 1 for zones, 17 → 4 for outputs, 19 → 18 → 16 → 0 for partitions) and caches the highest supported level for the session.
+
+See `examples/2_10_get_extended_names_and_params.rs` for a full demonstration.
 
 ## 🏗 Architecture
 

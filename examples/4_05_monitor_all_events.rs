@@ -110,11 +110,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 SatelEvent::PartitionNameReceived { id, name } => {
                     println!("[{}] [NAME]              Partition #{:02}: \"{}\"", ts, id, name);
                 }
+                SatelEvent::PartitionParamsReceived { id, params } => {
+                    println!("[{}] [PARAMS]            Partition #{:02}: type={:?}, obj={:?}", ts, id, params.partition_type, params.object_number);
+                }
                 SatelEvent::ZoneNameReceived { id, name } => {
                     println!("[{}] [NAME]              Zone      #{:03}: \"{}\"", ts, id, name);
                 }
+                SatelEvent::ZoneParamsReceived { id, params } => {
+                    println!("[{}] [PARAMS]            Zone      #{:03}: reaction={:?}, part={:?}", ts, id, params.reaction, params.partition);
+                }
                 SatelEvent::OutputNameReceived { id, name } => {
                     println!("[{}] [NAME]              Output    #{:03}: \"{}\"", ts, id, name);
+                }
+                SatelEvent::OutputParamsReceived { id, params } => {
+                    println!("[{}] [PARAMS]            Output    #{:03}: function={:?}, control={:?}", ts, id, params.function, params.control);
                 }
                 SatelEvent::SystemStatusChanged(status) => {
                     println!(

@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-09-24
+
+### Added
+- Extended name & parameter reading (ETHM-1 command 0xEE):
+  - Configuration option `extended_name_read: bool` (default: `true`), dynamic reloadable via `hot_reload_config` without connection reset.
+  - Automatic fallback hierarchy when the panel rejects extended query types:
+    - Zones: 5 -> 1 (falls back to basic zone read, retaining reaction type).
+    - Outputs: 17 -> 4 (falls back to basic output read, retaining function).
+    - Partitions: 19 -> 18 -> 16 -> 0 (falls back progressively, retaining partition type).
+    - Session remembers the highest supported query type across queries without repeating rejected queries.
+  - Parameter data structures: `ZoneParams`, `OutputParams`, `PartitionParams`.
+  - Client parameter query methods and memory cache getters:
+    - `get_zone_params(id)` / `get_cached_zone_params(id)`
+    - `get_output_params(id)` / `get_cached_output_params(id)`
+    - `get_partition_params(id)` / `get_cached_partition_params(id)`
+  - New broadcast events: `SatelEvent::ZoneParamsReceived`, `SatelEvent::OutputParamsReceived`, `SatelEvent::PartitionParamsReceived`.
+  - Scans (`get_all_zone_names`, `get_all_output_names`, `get_all_partition_names`) emit both `*NameReceived` and `*ParamsReceived` per position when `extended_name_read` is enabled, while `SyncProgress` tracks scanned positions.
+- Type Catalogs:
+  - `ZoneReaction` (codes 0..97) with stable snake_case key, English label, and `ZoneKind` categorization.
+  - `OutputFunction` (codes 0..123) with stable snake_case key, English label, controllability check (`is_controllable()`), and control classification (`control()` -> `OutputControl::Timed`, `Bistable`, `Unknown`, `None`).
+  - `PartitionType` (codes 0..3) with stable snake_case key, English label, options bitmask (`PartitionOptions`), auto-arm defer timer (`AutoArmDeferTimer`), and dependent partitions mask (`DependentPartitions`).
+- Example `examples/2_10_get_extended_names_and_params.rs` demonstrating full discovery of names, parameters, and control modes.
+
 ## [1.8.1] - 2026-09-18
 
 ### Fixed

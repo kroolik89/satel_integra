@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::command::SatelResult;
 use crate::state::{
     AutoReadReport, CmeSource, ConnectionState, ConnectionStatistics, EthmVersion, IntegraVersion,
-    SystemStatus, TemperatureSensorStatus, TroubleType,
+    OutputParams, PartitionParams, SystemStatus, TemperatureSensorStatus, TroubleType, ZoneParams,
 };
 
 /// Category of panel elements being synchronized in batch.
@@ -78,10 +78,16 @@ pub enum SatelEvent {
     ZoneTemperatureError { id: u16, status: TemperatureSensorStatus },
     /// Zone UTF-8 name received (0xEE type 1).
     ZoneNameReceived { id: u16, name: String },
+    /// Zone parameters received (0xEE types 1, 5).
+    ZoneParamsReceived { id: u16, params: ZoneParams },
     /// Output UTF-8 name received (0xEE type 4).
     OutputNameReceived { id: u16, name: String },
+    /// Output parameters received (0xEE types 4, 17).
+    OutputParamsReceived { id: u16, params: OutputParams },
     /// Partition UTF-8 name received (0xEE type 0).
     PartitionNameReceived { id: u16, name: String },
+    /// Partition parameters received (0xEE types 0, 16, 18, 19).
+    PartitionParamsReceived { id: u16, params: PartitionParams },
     /// Integra panel model and firmware version received (0x7E).
     IntegraVersionReceived(IntegraVersion),
     /// ETHM/UART communication module version received (0x7C).

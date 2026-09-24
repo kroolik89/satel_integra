@@ -430,6 +430,9 @@ mod tests {
             tx: internal_tx,
             worker: Arc::new(Mutex::new(None)),
             auto_read_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            session_zone_type: Arc::new(std::sync::atomic::AtomicU8::new(5)),
+            session_output_type: Arc::new(std::sync::atomic::AtomicU8::new(17)),
+            session_partition_type: Arc::new(std::sync::atomic::AtomicU8::new(19)),
         };
         (client, rx)
     }

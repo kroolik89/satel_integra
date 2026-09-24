@@ -320,6 +320,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Emit system status events on every read even if state is unchanged. Default: false.
         emit_unchanged_system_status: false,
+
+        // --------------------------------------------------------------------
+        // 10. Extended Name & Parameter Reading (ETHM-1 Command 0xEE)
+        // --------------------------------------------------------------------
+        // Read device parameters (reaction types, output functions & durations, partition options)
+        // alongside UTF-8 names using extended query types (5, 17, 19). Default: true.
+        extended_name_read: true,
     };
 
     println!("Config initialized successfully.");

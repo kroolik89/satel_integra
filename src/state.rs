@@ -1,7 +1,14 @@
 use chrono::{DateTime, Local};
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
+
+pub use crate::output_catalog::{OutputControl, OutputFunction};
+pub use crate::partition_catalog::{
+    AutoArmDeferStatus, AutoArmDeferTimer, DependentPartitions, PartitionOptions, PartitionType,
+};
+pub use crate::zone_catalog::{ZoneKind, ZoneReaction};
 
 // --- Connection ---
 
@@ -259,6 +266,39 @@ pub type OutputName = SatelName;
 /// Alias for partition name.
 pub type PartitionName = SatelName;
 
+// --- Parameters ---
+
+/// Detailed parameters of a zone (reaction type, partition assignment).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZoneParams {
+    pub zone_id: u16,
+    pub reaction: ZoneReaction,
+    pub partition: Option<u8>,
+    pub read_at: DateTime<Local>,
+}
+
+/// Detailed parameters of an output (function, operating duration, control capability).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputParams {
+    pub output_id: u16,
+    pub function: OutputFunction,
+    pub duration: Option<Duration>,
+    pub control: OutputControl,
+    pub read_at: DateTime<Local>,
+}
+
+/// Detailed parameters of a partition (partition type, object assignment, options, timers, dependencies).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartitionParams {
+    pub partition_id: u16,
+    pub partition_type: PartitionType,
+    pub object_number: Option<u8>,
+    pub options: Option<PartitionOptions>,
+    pub auto_arm_defer: Option<AutoArmDeferTimer>,
+    pub dependent_partitions: Option<DependentPartitions>,
+    pub read_at: DateTime<Local>,
+}
+
 // --- Temperature ---
 
 /// Status and health state of a zone temperature probe.
@@ -426,6 +466,9 @@ pub struct Zone {
     pub no_violation_trouble_read_at: DateTime<Local>,
     pub long_violation_trouble_state: bool,
     pub long_violation_trouble_read_at: DateTime<Local>,
+    pub reaction: Option<ZoneReaction>,
+    pub partition: Option<u8>,
+    pub params_read_at: Option<DateTime<Local>>,
 }
 
 impl Zone {
@@ -461,6 +504,9 @@ impl Zone {
             no_violation_trouble_read_at: now,
             long_violation_trouble_state: false,
             long_violation_trouble_read_at: now,
+            reaction: None,
+            partition: None,
+            params_read_at: None,
         }
     }
 
@@ -477,6 +523,16 @@ impl Zone {
             temperature: self.temperature_value,
             read_at: self.temperature_read_at,
         }
+    }
+
+    pub fn to_zone_params(&self) -> Option<ZoneParams> {
+        let reaction = self.reaction?;
+        Some(ZoneParams {
+            zone_id: self.id,
+            reaction,
+            partition: self.partition,
+            read_at: self.params_read_at.unwrap_or(self.zone_name_read_at),
+        })
     }
 }
 
@@ -500,6 +556,12 @@ pub struct Partition {
     pub exit_time_gt_10s_at: DateTime<Local>,
     pub exit_time_lt_10s: bool,
     pub exit_time_lt_10s_at: DateTime<Local>,
+    pub partition_type: Option<PartitionType>,
+    pub object_number: Option<u8>,
+    pub options: Option<PartitionOptions>,
+    pub auto_arm_defer: Option<AutoArmDeferTimer>,
+    pub dependent_partitions: Option<DependentPartitions>,
+    pub params_read_at: Option<DateTime<Local>>,
 }
 
 impl Partition {
@@ -523,6 +585,12 @@ impl Partition {
             exit_time_gt_10s_at: now,
             exit_time_lt_10s: false,
             exit_time_lt_10s_at: now,
+            partition_type: None,
+            object_number: None,
+            options: None,
+            auto_arm_defer: None,
+            dependent_partitions: None,
+            params_read_at: None,
         }
     }
 
@@ -531,6 +599,19 @@ impl Partition {
             name: self.name.clone(),
             read_at: self.name_read_at,
         }
+    }
+
+    pub fn to_partition_params(&self) -> Option<PartitionParams> {
+        let partition_type = self.partition_type?;
+        Some(PartitionParams {
+            partition_id: self.id,
+            partition_type,
+            object_number: self.object_number,
+            options: self.options,
+            auto_arm_defer: self.auto_arm_defer,
+            dependent_partitions: self.dependent_partitions,
+            read_at: self.params_read_at.unwrap_or(self.name_read_at),
+        })
     }
 }
 
@@ -542,6 +623,10 @@ pub struct Output {
     pub name_read_at: DateTime<Local>,
     pub state: bool,
     pub state_read_at: DateTime<Local>,
+    pub function: Option<OutputFunction>,
+    pub duration: Option<Duration>,
+    pub control: Option<OutputControl>,
+    pub params_read_at: Option<DateTime<Local>>,
 }
 
 impl Output {
@@ -553,6 +638,10 @@ impl Output {
             name_read_at: now,
             state: false,
             state_read_at: now,
+            function: None,
+            duration: None,
+            control: None,
+            params_read_at: None,
         }
     }
 
@@ -561,6 +650,18 @@ impl Output {
             name: self.name.clone(),
             read_at: self.name_read_at,
         }
+    }
+
+    pub fn to_output_params(&self) -> Option<OutputParams> {
+        let function = self.function?;
+        let control = self.control.clone().unwrap_or_else(|| function.control_from_duration(self.duration));
+        Some(OutputParams {
+            output_id: self.id,
+            function,
+            duration: self.duration,
+            control,
+            read_at: self.params_read_at.unwrap_or(self.name_read_at),
+        })
     }
 }
 

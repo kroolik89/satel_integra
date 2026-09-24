@@ -4,7 +4,11 @@ pub mod partitions;
 pub mod system;
 pub mod zones;
 
-pub use names::{process_output_name, process_partition_name, process_zone_name};
+pub use names::{
+    process_output_name, process_output_params, process_output_response, process_partition_name,
+    process_partition_params, process_partition_response, process_zone_name, process_zone_params,
+    process_zone_response,
+};
 pub use outputs::process_outputs_state;
 pub use partitions::{
     process_partitions_alarm, process_partitions_alarm_memory, process_partitions_armed_really,

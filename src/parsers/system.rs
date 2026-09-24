@@ -389,7 +389,7 @@ fn get_rules(cmd: u8) -> Option<(usize, Vec<FieldRule>)> {
             bitmask(24, 2, 1, true, |x| TroubleType::ExpanderAcuJammedOrShortCircuit(x as u8)),
             module_mask(26, true, |x| TroubleType::KeypadRestart(x as u8)),
             bitmask(27, 8, 1, true, |x| TroubleType::ExpanderRestart(x as u8)),
-            custom(true, |data, memory| {
+            custom(true, |data, _memory| {
                 let mut items = Vec::new();
                 if data.len() >= 39 {
                     let cme1 = u16::from_be_bytes([data[35], data[36]]);

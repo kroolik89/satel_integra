@@ -213,6 +213,11 @@ pub struct Config {
     /// even if status bits have not changed. Default: false.
     #[serde(default = "default_emit_unchanged")]
     pub emit_unchanged_system_status: bool,
+
+    /// Whether to read extended device parameters along with names (0xEE types 5, 17, 19).
+    /// Default: true.
+    #[serde(default = "default_extended_name_read")]
+    pub extended_name_read: bool,
 }
 
 impl Config {
@@ -349,10 +354,12 @@ impl Default for Config {
             emit_unchanged_partitions: default_emit_unchanged(),
             emit_unchanged_troubles: default_emit_unchanged(),
             emit_unchanged_system_status: default_emit_unchanged(),
+            extended_name_read: default_extended_name_read(),
         }
     }
 }
 
+fn default_extended_name_read() -> bool { true }
 fn default_encryption() -> bool { false }
 fn default_emit_unchanged() -> bool { false }
 fn default_auto_read() -> bool { false }
