@@ -109,10 +109,11 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(zone) = state.zones.get_mut(i) {
+                let is_initial = zone.tamper_read_at.is_none();
                 let changed = zone.tamper_state != new_state;
-                if emit_all || changed || self.config.read().unwrap().emit_unchanged_zones {
+                if emit_all || is_initial || changed || self.config.read().unwrap().emit_unchanged_zones {
                     zone.tamper_state = new_state;
-                    zone.tamper_read_at = result.read_at;
+                    zone.tamper_read_at = Some(result.read_at);
                     let _ = self.event_tx.send(SatelEvent::ZoneTamper { id: zone.id, state: new_state });
                 }
             }
@@ -124,10 +125,11 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(zone) = state.zones.get_mut(i) {
+                let is_initial = zone.alarm_read_at.is_none();
                 let changed = zone.alarm_state != new_state;
-                if emit_all || changed || self.config.read().unwrap().emit_unchanged_zones {
+                if emit_all || is_initial || changed || self.config.read().unwrap().emit_unchanged_zones {
                     zone.alarm_state = new_state;
-                    zone.alarm_read_at = result.read_at;
+                    zone.alarm_read_at = Some(result.read_at);
                     let _ = self.event_tx.send(SatelEvent::ZoneAlarm { id: zone.id, state: new_state });
                 }
             }
@@ -139,10 +141,11 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(zone) = state.zones.get_mut(i) {
+                let is_initial = zone.violation_read_at.is_none();
                 let changed = zone.violation_state != new_state;
-                if emit_all || changed || self.config.read().unwrap().emit_unchanged_zones {
+                if emit_all || is_initial || changed || self.config.read().unwrap().emit_unchanged_zones {
                     zone.violation_state = new_state;
-                    zone.violation_read_at = result.read_at;
+                    zone.violation_read_at = Some(result.read_at);
                     let _ = self.event_tx.send(SatelEvent::ZoneViolation { id: zone.id, state: new_state });
                 }
             }
@@ -154,10 +157,11 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(zone) = state.zones.get_mut(i) {
+                let is_initial = zone.tamper_alarm_read_at.is_none();
                 let changed = zone.tamper_alarm_state != new_state;
-                if emit_all || changed || self.config.read().unwrap().emit_unchanged_zones {
+                if emit_all || is_initial || changed || self.config.read().unwrap().emit_unchanged_zones {
                     zone.tamper_alarm_state = new_state;
-                    zone.tamper_alarm_read_at = result.read_at;
+                    zone.tamper_alarm_read_at = Some(result.read_at);
                     let _ = self.event_tx.send(SatelEvent::ZoneTamperAlarm { id: zone.id, state: new_state });
                 }
             }
@@ -169,10 +173,11 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(zone) = state.zones.get_mut(i) {
+                let is_initial = zone.alarm_memory_read_at.is_none();
                 let changed = zone.alarm_memory_state != new_state;
-                if emit_all || changed || self.config.read().unwrap().emit_unchanged_zones {
+                if emit_all || is_initial || changed || self.config.read().unwrap().emit_unchanged_zones {
                     zone.alarm_memory_state = new_state;
-                    zone.alarm_memory_read_at = result.read_at;
+                    zone.alarm_memory_read_at = Some(result.read_at);
                     let _ = self.event_tx.send(SatelEvent::ZoneAlarmMemory { id: zone.id, state: new_state });
                 }
             }
@@ -184,10 +189,11 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(zone) = state.zones.get_mut(i) {
+                let is_initial = zone.tamper_alarm_memory_read_at.is_none();
                 let changed = zone.tamper_alarm_memory_state != new_state;
-                if emit_all || changed || self.config.read().unwrap().emit_unchanged_zones {
+                if emit_all || is_initial || changed || self.config.read().unwrap().emit_unchanged_zones {
                     zone.tamper_alarm_memory_state = new_state;
-                    zone.tamper_alarm_memory_read_at = result.read_at;
+                    zone.tamper_alarm_memory_read_at = Some(result.read_at);
                     let _ = self.event_tx.send(SatelEvent::ZoneTamperAlarmMemory { id: zone.id, state: new_state });
                 }
             }
@@ -199,10 +205,11 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(zone) = state.zones.get_mut(i) {
+                let is_initial = zone.bypass_read_at.is_none();
                 let changed = zone.bypass_state != new_state;
-                if emit_all || changed || self.config.read().unwrap().emit_unchanged_zones {
+                if emit_all || is_initial || changed || self.config.read().unwrap().emit_unchanged_zones {
                     zone.bypass_state = new_state;
-                    zone.bypass_read_at = result.read_at;
+                    zone.bypass_read_at = Some(result.read_at);
                     let _ = self.event_tx.send(SatelEvent::ZoneBypass { id: zone.id, state: new_state });
                 }
             }
@@ -214,10 +221,11 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(zone) = state.zones.get_mut(i) {
+                let is_initial = zone.no_violation_trouble_read_at.is_none();
                 let changed = zone.no_violation_trouble_state != new_state;
-                if emit_all || changed || self.config.read().unwrap().emit_unchanged_zones {
+                if emit_all || is_initial || changed || self.config.read().unwrap().emit_unchanged_zones {
                     zone.no_violation_trouble_state = new_state;
-                    zone.no_violation_trouble_read_at = result.read_at;
+                    zone.no_violation_trouble_read_at = Some(result.read_at);
                     let _ = self.event_tx.send(SatelEvent::ZoneNoViolationTrouble { id: zone.id, state: new_state });
                 }
             }
@@ -229,10 +237,11 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(zone) = state.zones.get_mut(i) {
+                let is_initial = zone.long_violation_trouble_read_at.is_none();
                 let changed = zone.long_violation_trouble_state != new_state;
-                if emit_all || changed || self.config.read().unwrap().emit_unchanged_zones {
+                if emit_all || is_initial || changed || self.config.read().unwrap().emit_unchanged_zones {
                     zone.long_violation_trouble_state = new_state;
-                    zone.long_violation_trouble_read_at = result.read_at;
+                    zone.long_violation_trouble_read_at = Some(result.read_at);
                     let _ = self.event_tx.send(SatelEvent::ZoneLongViolationTrouble { id: zone.id, state: new_state });
                 }
             }
@@ -244,10 +253,11 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(partition) = state.partitions.get_mut(i) {
+                let is_initial = partition.armed_suppressed_at.is_none();
                 let changed = partition.armed_suppressed != new_state;
-                if emit_all || changed || self.config.read().unwrap().emit_unchanged_partitions {
+                if emit_all || is_initial || changed || self.config.read().unwrap().emit_unchanged_partitions {
                     partition.armed_suppressed = new_state;
-                    partition.armed_suppressed_at = result.read_at;
+                    partition.armed_suppressed_at = Some(result.read_at);
                     let _ = self.event_tx.send(SatelEvent::PartitionArmed { id: partition.id, state: new_state });
                 }
             }
@@ -259,10 +269,11 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(partition) = state.partitions.get_mut(i) {
+                let is_initial = partition.armed_really_at.is_none();
                 let changed = partition.armed_really != new_state;
-                if emit_all || changed || self.config.read().unwrap().emit_unchanged_partitions {
+                if emit_all || is_initial || changed || self.config.read().unwrap().emit_unchanged_partitions {
                     partition.armed_really = new_state;
-                    partition.armed_really_at = result.read_at;
+                    partition.armed_really_at = Some(result.read_at);
                     let _ = self.event_tx.send(SatelEvent::PartitionArmedReally { id: partition.id, state: new_state });
                 }
             }
@@ -274,10 +285,11 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(partition) = state.partitions.get_mut(i) {
+                let is_initial = partition.alarm_at.is_none();
                 let changed = partition.alarm != new_state;
-                if emit_all || changed || self.config.read().unwrap().emit_unchanged_partitions {
+                if emit_all || is_initial || changed || self.config.read().unwrap().emit_unchanged_partitions {
                     partition.alarm = new_state;
-                    partition.alarm_at = result.read_at;
+                    partition.alarm_at = Some(result.read_at);
                     let _ = self.event_tx.send(SatelEvent::PartitionAlarm { id: partition.id, state: new_state });
                 }
             }
@@ -289,10 +301,11 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(partition) = state.partitions.get_mut(i) {
+                let is_initial = partition.alarm_memory_at.is_none();
                 let changed = partition.alarm_memory != new_state;
-                if emit_all || changed || self.config.read().unwrap().emit_unchanged_partitions {
+                if emit_all || is_initial || changed || self.config.read().unwrap().emit_unchanged_partitions {
                     partition.alarm_memory = new_state;
-                    partition.alarm_memory_at = result.read_at;
+                    partition.alarm_memory_at = Some(result.read_at);
                     let _ = self.event_tx.send(SatelEvent::PartitionAlarmMemory { id: partition.id, state: new_state });
                 }
             }
@@ -304,10 +317,11 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(partition) = state.partitions.get_mut(i) {
+                let is_initial = partition.entry_time_at.is_none();
                 let changed = partition.entry_time != new_state;
-                if emit_all || changed || self.config.read().unwrap().emit_unchanged_partitions {
+                if emit_all || is_initial || changed || self.config.read().unwrap().emit_unchanged_partitions {
                     partition.entry_time = new_state;
-                    partition.entry_time_at = result.read_at;
+                    partition.entry_time_at = Some(result.read_at);
                     let _ = self.event_tx.send(SatelEvent::PartitionEntryTime { id: partition.id, state: new_state });
                 }
             }
@@ -319,10 +333,11 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(partition) = state.partitions.get_mut(i) {
+                let is_initial = partition.exit_time_gt_10s_at.is_none();
                 let changed = partition.exit_time_gt_10s != new_state;
-                if emit_all || changed || self.config.read().unwrap().emit_unchanged_partitions {
+                if emit_all || is_initial || changed || self.config.read().unwrap().emit_unchanged_partitions {
                     partition.exit_time_gt_10s = new_state;
-                    partition.exit_time_gt_10s_at = result.read_at;
+                    partition.exit_time_gt_10s_at = Some(result.read_at);
                     let _ = self.event_tx.send(SatelEvent::PartitionExitTimeGt10s { id: partition.id, state: new_state });
                 }
             }
@@ -334,10 +349,11 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(partition) = state.partitions.get_mut(i) {
+                let is_initial = partition.exit_time_lt_10s_at.is_none();
                 let changed = partition.exit_time_lt_10s != new_state;
-                if emit_all || changed || self.config.read().unwrap().emit_unchanged_partitions {
+                if emit_all || is_initial || changed || self.config.read().unwrap().emit_unchanged_partitions {
                     partition.exit_time_lt_10s = new_state;
-                    partition.exit_time_lt_10s_at = result.read_at;
+                    partition.exit_time_lt_10s_at = Some(result.read_at);
                     let _ = self.event_tx.send(SatelEvent::PartitionExitTimeLt10s { id: partition.id, state: new_state });
                 }
             }
@@ -349,10 +365,11 @@ impl SatelIntegra {
         let mut state = self.state.write().map_err(|_| SatelError::StatePoisoned)?;
         for (i, &new_state) in result.states.iter().enumerate() {
             if let Some(output) = state.outputs.get_mut(i) {
+                let is_initial = output.state_read_at.is_none();
                 let changed = output.state != new_state;
-                if emit_all || changed || self.config.read().unwrap().emit_unchanged_outputs {
+                if emit_all || is_initial || changed || self.config.read().unwrap().emit_unchanged_outputs {
                     output.state = new_state;
-                    output.state_read_at = result.read_at;
+                    output.state_read_at = Some(result.read_at);
                     let _ = self.event_tx.send(SatelEvent::OutputChanged { id: output.id, state: new_state });
                 }
             }
@@ -730,5 +747,133 @@ mod tests {
             _ => panic!("Expected SatelEvent::PartitionAlarm for partition 1, got {:?}", event),
         }
         assert!(rx.try_recv().is_err(), "Only the changed partition should have emitted an event");
+    }
+
+    #[test]
+    fn test_outputs_state_initial_frame_emit_all_false() {
+        let (client, mut rx) = setup_client();
+        let result = OutputsStateData {
+            states: vec![false; 128],
+            read_at: chrono::Local::now(),
+        };
+
+        // 1. First frame after client creation with emit_all == false:
+        // Must emit event for EVERY output (even though all are false) because read_at was None.
+        client.update_outputs_state_internal(result.clone(), false).unwrap();
+        for expected_id in 1..=128 {
+            let event = rx.try_recv().unwrap();
+            match event {
+                SatelEvent::OutputChanged { id, state } => {
+                    assert_eq!(id, expected_id);
+                    assert_eq!(state, false);
+                }
+                _ => panic!("Expected SatelEvent::OutputChanged, got {:?}", event),
+            }
+        }
+        assert!(rx.try_recv().is_err(), "No more events should be in the channel after initial frame");
+
+        // 2. Second identical frame with emit_all == false:
+        // Must emit ZERO events because read_at is now Some and values are unchanged.
+        client.update_outputs_state_internal(result.clone(), false).unwrap();
+        assert!(rx.try_recv().is_err(), "Duplicate frame must not emit any events");
+
+        // 3. Third frame with emit_all == false and 1 position changed:
+        // Must emit exactly ONE event for the changed position.
+        let mut modified = result;
+        modified.states[7] = true; // Output 8 changed to true
+        client.update_outputs_state_internal(modified, false).unwrap();
+        let event = rx.try_recv().unwrap();
+        match event {
+            SatelEvent::OutputChanged { id, state } => {
+                assert_eq!(id, 8);
+                assert_eq!(state, true);
+            }
+            _ => panic!("Expected SatelEvent::OutputChanged for output 8, got {:?}", event),
+        }
+        assert!(rx.try_recv().is_err(), "Only the single changed output should have emitted an event");
+    }
+
+    #[test]
+    fn test_zones_violation_initial_frame_emit_all_false() {
+        let (client, mut rx) = setup_client();
+        let result = ZonesViolationData {
+            states: vec![false; 128],
+            read_at: chrono::Local::now(),
+        };
+
+        // 1. First frame with emit_all == false:
+        // Must emit event for EVERY zone (all false) because violation_read_at was None.
+        client.update_zones_violation_internal(result.clone(), false).unwrap();
+        for expected_id in 1..=128 {
+            let event = rx.try_recv().unwrap();
+            match event {
+                SatelEvent::ZoneViolation { id, state } => {
+                    assert_eq!(id, expected_id);
+                    assert_eq!(state, false);
+                }
+                _ => panic!("Expected SatelEvent::ZoneViolation, got {:?}", event),
+            }
+        }
+        assert!(rx.try_recv().is_err(), "No more events should be in the channel after initial frame");
+
+        // 2. Second identical frame with emit_all == false: emits ZERO events.
+        client.update_zones_violation_internal(result.clone(), false).unwrap();
+        assert!(rx.try_recv().is_err(), "Duplicate frame must not emit any events");
+
+        // 3. Third frame with emit_all == false and 1 position changed: emits ONE event.
+        let mut modified = result;
+        modified.states[11] = true; // Zone 12 changed to true
+        client.update_zones_violation_internal(modified, false).unwrap();
+        let event = rx.try_recv().unwrap();
+        match event {
+            SatelEvent::ZoneViolation { id, state } => {
+                assert_eq!(id, 12);
+                assert_eq!(state, true);
+            }
+            _ => panic!("Expected SatelEvent::ZoneViolation for zone 12, got {:?}", event),
+        }
+        assert!(rx.try_recv().is_err(), "Only the single changed zone should have emitted an event");
+    }
+
+    #[test]
+    fn test_partitions_alarm_initial_frame_emit_all_false() {
+        let (client, mut rx) = setup_client();
+        let result = PartitionsData {
+            states: vec![false; 32],
+            read_at: chrono::Local::now(),
+        };
+
+        // 1. First frame with emit_all == false:
+        // Must emit event for EVERY partition (all false) because alarm_at was None.
+        client.update_partitions_alarm_internal(result.clone(), false).unwrap();
+        for expected_id in 1..=32 {
+            let event = rx.try_recv().unwrap();
+            match event {
+                SatelEvent::PartitionAlarm { id, state } => {
+                    assert_eq!(id, expected_id);
+                    assert_eq!(state, false);
+                }
+                _ => panic!("Expected SatelEvent::PartitionAlarm, got {:?}", event),
+            }
+        }
+        assert!(rx.try_recv().is_err(), "No more events should be in the channel after initial frame");
+
+        // 2. Second identical frame with emit_all == false: emits ZERO events.
+        client.update_partitions_alarm_internal(result.clone(), false).unwrap();
+        assert!(rx.try_recv().is_err(), "Duplicate frame must not emit any events");
+
+        // 3. Third frame with emit_all == false and 1 position changed: emits ONE event.
+        let mut modified = result;
+        modified.states[3] = true; // Partition 4 changed to true
+        client.update_partitions_alarm_internal(modified, false).unwrap();
+        let event = rx.try_recv().unwrap();
+        match event {
+            SatelEvent::PartitionAlarm { id, state } => {
+                assert_eq!(id, 4);
+                assert_eq!(state, true);
+            }
+            _ => panic!("Expected SatelEvent::PartitionAlarm for partition 4, got {:?}", event),
+        }
+        assert!(rx.try_recv().is_err(), "Only the single changed partition should have emitted an event");
     }
 }

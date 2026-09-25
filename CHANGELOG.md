@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] - 2026-09-25
+
+### Changed
+- **BREAKING**: Changed state read timestamp fields from `DateTime<Local>` to `Option<DateTime<Local>>`, initialized to `None` on cache creation:
+  - `Output`: `state_read_at`
+  - `Zone`: `tamper_read_at`, `alarm_read_at`, `violation_read_at`, `tamper_alarm_read_at`, `alarm_memory_read_at`, `tamper_alarm_memory_read_at`, `bypass_read_at`, `no_violation_trouble_read_at`, `long_violation_trouble_read_at`
+  - `Partition`: `armed_suppressed_at`, `armed_really_at`, `alarm_at`, `alarm_memory_at`, `entry_time_at`, `exit_time_gt_10s_at`, `exit_time_lt_10s_at`
+  - `ZoneStatus`: `violation_at`, `tamper_at`, `alarm_at`, `tamper_alarm_at`, `alarm_memory_at`, `tamper_alarm_memory_at`, `bypass_at`, `no_violation_trouble_at`, `long_violation_trouble_at`
+- Initial frame event emission: when `read_at` is `None` (position has never been read since client startup), state updates emit a `SatelEvent` for every position (even `false`) regardless of `emit_all`. Subsequent identical frames emit zero events.
+- Read timestamps are retained across disconnects/reconnects so reconnected sessions emit only true differences against the last known cache state.
+
 ## [1.10.0] - 2026-09-25
 
 ### Added

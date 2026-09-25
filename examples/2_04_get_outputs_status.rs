@@ -1,4 +1,4 @@
-﻿//! Example 2_04: Query real-time status of all outputs (ON / OFF) from Satel Integra.
+//! Example 2_04: Query real-time status of all outputs (ON / OFF) from Satel Integra.
 //!
 //! ============================================================================
 //! 1. 2-STEP OUTPUTS STATUS WORKFLOW (NETWORK FETCH VS CACHE READ):
@@ -110,11 +110,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "OFF [idle]"
             };
 
+            let read_at_display = output
+                .state_read_at
+                .map(|t| t.format("%H:%M:%S").to_string())
+                .unwrap_or_else(|| "-".to_string());
+
             println!(
                 "#{:03}  | {: <14} | {: <10}",
                 output.id,
                 state_display,
-                output.state_read_at.format("%H:%M:%S")
+                read_at_display
             );
         }
     }
