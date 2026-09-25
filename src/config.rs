@@ -218,6 +218,11 @@ pub struct Config {
     /// Default: true.
     #[serde(default = "default_extended_name_read")]
     pub extended_name_read: bool,
+
+    /// Maximum consecutive missed keep-alive pings (0x7E) before declaring connection lost.
+    /// Default: 3. Set to 0 to disable missed ping detection.
+    #[serde(default = "default_max_missed_pings")]
+    pub max_missed_pings: u32,
 }
 
 impl Config {
@@ -355,9 +360,12 @@ impl Default for Config {
             emit_unchanged_troubles: default_emit_unchanged(),
             emit_unchanged_system_status: default_emit_unchanged(),
             extended_name_read: default_extended_name_read(),
+            max_missed_pings: default_max_missed_pings(),
         }
     }
 }
+
+fn default_max_missed_pings() -> u32 { 3 }
 
 fn default_extended_name_read() -> bool { true }
 fn default_encryption() -> bool { false }

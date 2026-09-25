@@ -84,6 +84,7 @@ impl SatelIntegra {
             stream: None,
             state_worker_tx: None,
             auto_read_dirty: auto_read_dirty.clone(),
+            consecutive_missed_pings: 0,
         };
 
         Self {

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] - 2026-09-25
+
+### Added
+- Dead connection detection via consecutive missed keep-alive pings (0x7E `IntegraVersion`).
+- Configuration option `max_missed_pings: u32` (default: 3). When set to `N > 0`, `N` consecutive ping timeouts trigger `ConnectionLost` and initiate existing automatic reconnection backoff. Set to 0 to disable detection.
+- Any valid frame received from the control panel (command response or auto-push event) resets the missed pings counter to 0.
+- Timeouts on non-ping command exchanges (e.g. 0x7D for non-existent temperature probes) do not increment the missed ping counter.
+
 ## [1.11.0] - 2026-09-25
 
 ### Changed

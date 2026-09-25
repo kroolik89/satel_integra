@@ -327,6 +327,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Read device parameters (reaction types, output functions & durations, partition options)
         // alongside UTF-8 names using extended query types (5, 17, 19). Default: true.
         extended_name_read: true,
+
+        // --------------------------------------------------------------------
+        // 11. Keep-Alive & Dead Connection Detection
+        // --------------------------------------------------------------------
+        // Maximum consecutive missed keep-alive pings (0x7E) before declaring connection lost.
+        // Default: 3. Set to 0 to disable missed ping detection.
+        max_missed_pings: 3,
     };
 
     println!("Config initialized successfully.");

@@ -71,6 +71,7 @@ pub(crate) struct SatelCommunicationWorker {
     pub stream: Option<FramedStream>,
     pub state_worker_tx: Option<mpsc::Sender<StateWorkerMessage>>,
     pub auto_read_dirty: std::sync::Arc<AtomicBool>,
+    pub consecutive_missed_pings: u32,
 }
 
 impl SatelCommunicationWorker {
@@ -101,9 +102,15 @@ impl SatelCommunicationWorker {
                 }
 
                 res = Self::receive_push_internal(&mut self.stream, &self.state, &self.state_worker_tx), if self.stream.is_some() && self.get_current_state() == ConnectionState::Connected => {
-                    if let Err(e) = res {
-                        tracing::error!("Error receiving Push / Stream frame: {:?}", e);
-                        self.satel_connection_worker_connection_lost().await;
+                    match res {
+                        Ok(true) => {
+                            self.reset_missed_pings();
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            tracing::error!("Error receiving Push / Stream frame: {:?}", e);
+                            self.satel_connection_worker_connection_lost().await;
+                        }
                     }
                 }
 
@@ -135,7 +142,14 @@ impl SatelCommunicationWorker {
                     let last_send = self.state.read().unwrap().telemetry.last_send_at;
                     if current_state == ConnectionState::Connected && last_send.elapsed() >= Duration::from_secs(2) {
                         let cmd = vec![SatelCommand::IntegraVersion.to_byte()];
-                        let _ = self.satel_connection_worker_exchange(cmd, 0x7E, Duration::from_millis(500), Duration::from_millis(500), true).await;
+                        let res = self.satel_connection_worker_exchange(cmd, 0x7E, Duration::from_millis(500), Duration::from_millis(500), true).await;
+                        if matches!(res, Err(SatelError::Timeout)) && self.handle_ping_timeout() {
+                            tracing::warn!(
+                                "Brak odpowiedzi na {} kolejnych pingów — zrywam połączenie",
+                                self.consecutive_missed_pings
+                            );
+                            self.satel_connection_worker_connection_lost().await;
+                        }
                     }
 
                     // 3. Automatic reconnect with exponential backoff
@@ -262,6 +276,8 @@ impl SatelCommunicationWorker {
                         continue;
                     }
 
+                    self.reset_missed_pings();
+
                     let is_result_code = frame[0] == 0xEF;
                     let is_accepted = is_result_code && frame.get(1) == Some(&0xFF);
 
@@ -327,7 +343,18 @@ impl SatelCommunicationWorker {
         Self::notify_state_worker(&self.state_worker_tx, StateWorkerMessage::StatusChanged(ConnectionState::Handshake)).await;
     }
 
+    pub(crate) fn handle_ping_timeout(&mut self) -> bool {
+        self.consecutive_missed_pings = self.consecutive_missed_pings.saturating_add(1);
+        let max = self.config.read().unwrap().max_missed_pings;
+        max > 0 && self.consecutive_missed_pings >= max
+    }
+
+    pub(crate) fn reset_missed_pings(&mut self) {
+        self.consecutive_missed_pings = 0;
+    }
+
     async fn set_state_connected(&mut self) {
+        self.reset_missed_pings();
         {
             let mut s = self.state.write().unwrap();
             s.telemetry.connections_established.fetch_add(1, Ordering::Relaxed);
@@ -346,6 +373,7 @@ impl SatelCommunicationWorker {
 
     async fn satel_connection_worker_connection_lost(&mut self) {
         self.stream = None;
+        self.reset_missed_pings();
         {
             let mut s = self.state.write().unwrap();
             let prev = s.telemetry.status.state;
@@ -366,6 +394,7 @@ impl SatelCommunicationWorker {
 
     async fn satel_connection_worker_disconnect(&mut self) {
         self.stream = None;
+        self.reset_missed_pings();
         {
             let mut s = self.state.write().unwrap();
             let now = Local::now();
@@ -634,9 +663,9 @@ impl SatelCommunicationWorker {
         stream_opt: &mut Option<FramedStream>,
         state: &SatelStateHandle,
         state_worker_tx: &Option<mpsc::Sender<StateWorkerMessage>>,
-    ) -> Result<(), SatelError> {
+    ) -> Result<bool, SatelError> {
         let Some(stream) = stream_opt else {
-            return Ok(());
+            return Ok(false);
         };
         match timeout(Duration::from_millis(100), stream.next()).await {
             Ok(Some(Ok(frame))) => {
@@ -649,7 +678,7 @@ impl SatelCommunicationWorker {
                 if !is_accepted {
                     Self::notify_state_worker(state_worker_tx, StateWorkerMessage::Frame(frame)).await;
                 }
-                Ok(())
+                Ok(true)
             }
             Ok(Some(Err(e))) => {
                 if let Ok(s) = state.read() {
@@ -658,7 +687,7 @@ impl SatelCommunicationWorker {
                 Err(SatelError::Io(e))
             }
             Ok(None) => Err(SatelError::StreamClosed),
-            Err(_) => Ok(()),
+            Err(_) => Ok(false),
         }
     }
 }
@@ -695,6 +724,7 @@ mod tests {
             stream: None,
             state_worker_tx: None,
             auto_read_dirty: Arc::new(AtomicBool::new(false)),
+            consecutive_missed_pings: 0,
         };
 
         worker.satel_connection_worker_disconnect().await;
@@ -729,6 +759,7 @@ mod tests {
             stream: None,
             state_worker_tx: None,
             auto_read_dirty: Arc::new(AtomicBool::new(false)),
+            consecutive_missed_pings: 0,
         };
 
         // 1. From Disconnected -> ConnectionLost: connections_lost should NOT increment
@@ -801,6 +832,7 @@ mod tests {
             stream: Some(framed),
             state_worker_tx: Some(state_worker_tx),
             auto_read_dirty: Arc::new(AtomicBool::new(false)),
+            consecutive_missed_pings: 0,
         };
 
         // Background task simulating central responses
@@ -843,5 +875,139 @@ mod tests {
         // State worker SHOULD receive the frame for 0x80!
         let msg = state_worker_rx.try_recv().expect("Should notify state worker for non-0xEE command");
         assert!(matches!(msg, StateWorkerMessage::Frame(f) if f == vec![0xEF, 0x01]));
+    }
+
+    #[tokio::test]
+    async fn test_missed_pings_counter_and_threshold() {
+        let state = Arc::new(RwLock::new(SatelState::new()));
+        let (_tx, rx) = mpsc::channel(1);
+        let mut worker = SatelCommunicationWorker {
+            config: Arc::new(RwLock::new(Config {
+                max_missed_pings: 3,
+                ..Config::default()
+            })),
+            state: state.clone(),
+            rx,
+            stream: None,
+            state_worker_tx: None,
+            auto_read_dirty: Arc::new(AtomicBool::new(false)),
+            consecutive_missed_pings: 0,
+        };
+
+        worker.set_state_connected().await;
+        assert_eq!(worker.get_current_state(), ConnectionState::Connected);
+        assert_eq!(worker.consecutive_missed_pings, 0);
+
+        // Ping 1 fails -> threshold not reached (1 < 3)
+        assert!(!worker.handle_ping_timeout());
+        assert_eq!(worker.consecutive_missed_pings, 1);
+        assert_eq!(worker.get_current_state(), ConnectionState::Connected);
+
+        // Ping 2 fails (N - 1 = 2) -> threshold not reached (2 < 3)
+        assert!(!worker.handle_ping_timeout());
+        assert_eq!(worker.consecutive_missed_pings, 2);
+        assert_eq!(worker.get_current_state(), ConnectionState::Connected);
+
+        // Ping 3 fails (N = 3) -> threshold reached!
+        assert!(worker.handle_ping_timeout());
+        assert_eq!(worker.consecutive_missed_pings, 3);
+
+        // Worker triggers connection lost
+        worker.satel_connection_worker_connection_lost().await;
+        assert_eq!(worker.get_current_state(), ConnectionState::ConnectionLost);
+        assert_eq!(worker.consecutive_missed_pings, 0);
+    }
+
+    #[tokio::test]
+    async fn test_missed_pings_counter_reset_on_frame() {
+        let state = Arc::new(RwLock::new(SatelState::new()));
+        let (_tx, rx) = mpsc::channel(1);
+        let mut worker = SatelCommunicationWorker {
+            config: Arc::new(RwLock::new(Config {
+                max_missed_pings: 3,
+                ..Config::default()
+            })),
+            state: state.clone(),
+            rx,
+            stream: None,
+            state_worker_tx: None,
+            auto_read_dirty: Arc::new(AtomicBool::new(false)),
+            consecutive_missed_pings: 0,
+        };
+
+        // 2 missed pings
+        assert!(!worker.handle_ping_timeout());
+        assert!(!worker.handle_ping_timeout());
+        assert_eq!(worker.consecutive_missed_pings, 2);
+
+        // Frame received resets counter
+        worker.reset_missed_pings();
+        assert_eq!(worker.consecutive_missed_pings, 0);
+
+        // Next ping timeout starts from 1, not 3!
+        assert!(!worker.handle_ping_timeout());
+        assert_eq!(worker.consecutive_missed_pings, 1);
+    }
+
+    #[tokio::test]
+    async fn test_non_ping_timeout_does_not_increment_counter() {
+        use std::sync::atomic::AtomicU64;
+
+        let state = Arc::new(RwLock::new(SatelState::new()));
+        let (_tx, rx) = mpsc::channel(1);
+        let (client_io, _server_io) = tokio::io::duplex(1024);
+
+        let crc1 = Arc::new(AtomicU64::new(0));
+        let codec = crate::codec::SatelCodec::new(crc1);
+        let framed: tokio_util::codec::Framed<Box<dyn AsyncReadWrite>, _> =
+            tokio_util::codec::Framed::new(Box::new(client_io), codec);
+
+        let mut worker = SatelCommunicationWorker {
+            config: Arc::new(RwLock::new(Config {
+                max_missed_pings: 3,
+                ..Config::default()
+            })),
+            state: state.clone(),
+            rx,
+            stream: Some(framed),
+            state_worker_tx: None,
+            auto_read_dirty: Arc::new(AtomicBool::new(false)),
+            consecutive_missed_pings: 0,
+        };
+
+        // Query non-ping command (e.g. 0x7D) with a short timeout where server does not reply
+        let res = worker.satel_connection_worker_exchange(
+            vec![0x7D, 1],
+            0x7D,
+            Duration::from_millis(50),
+            Duration::from_millis(50),
+            false,
+        ).await;
+
+        assert!(matches!(res, Err(SatelError::Timeout)));
+        assert_eq!(worker.consecutive_missed_pings, 0, "Non-ping timeout must NOT increment missed pings");
+    }
+
+    #[tokio::test]
+    async fn test_missed_pings_disabled_when_zero() {
+        let state = Arc::new(RwLock::new(SatelState::new()));
+        let (_tx, rx) = mpsc::channel(1);
+        let mut worker = SatelCommunicationWorker {
+            config: Arc::new(RwLock::new(Config {
+                max_missed_pings: 0,
+                ..Config::default()
+            })),
+            state: state.clone(),
+            rx,
+            stream: None,
+            state_worker_tx: None,
+            auto_read_dirty: Arc::new(AtomicBool::new(false)),
+            consecutive_missed_pings: 0,
+        };
+
+        for _ in 0..10 {
+            assert!(!worker.handle_ping_timeout());
+        }
+        assert_eq!(worker.consecutive_missed_pings, 10);
     }
 }
