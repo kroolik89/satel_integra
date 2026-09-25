@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] - 2026-09-25
+
+### Added
+- One-time full state read methods (`refresh_*`) emitting a `SatelEvent` for every position (including unchanged), exactly once per position, without persistent state or lingering flags:
+  - Zones: `refresh_zones_violation`, `refresh_zones_tamper`, `refresh_zones_alarm`, `refresh_zones_tamper_alarm`, `refresh_zones_alarm_memory`, `refresh_zones_tamper_alarm_memory`, `refresh_zones_bypass`, `refresh_zones_no_violation_trouble`, `refresh_zones_long_violation_trouble`.
+  - Partitions: `refresh_partitions_armed_suppressed`, `refresh_partitions_armed_really`, `refresh_partitions_alarm`, `refresh_partitions_alarm_memory`, `refresh_partitions_times`.
+  - Outputs: `refresh_outputs_state`.
+- Internal `emit_all: bool` parameter in `update_*_internal` methods ensuring that full event emission is strictly scoped to the calling `refresh_*` exchange response and cannot affect subsequent push or polling frames.
+
 ## [1.9.0] - 2026-09-24
 
 ### Added

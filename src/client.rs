@@ -1317,7 +1317,7 @@ impl SatelIntegra {
         let cmd = vec![SatelCommand::ZonesTamper.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
         let result = process_zones_tamper(&response, &self.config.read().unwrap().io_tamper_invert)?;
-        self.update_zones_tamper_internal(result)?;
+        self.update_zones_tamper_internal(result, false)?;
         tracing::info!("Updated zones tamper states in cache");
         Ok(())
     }
@@ -1328,7 +1328,7 @@ impl SatelIntegra {
         let cmd = vec![SatelCommand::ZonesAlarm.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
         let result = process_zones_alarm(&response, &self.config.read().unwrap().io_alarm_invert)?;
-        self.update_zones_alarm_internal(result)?;
+        self.update_zones_alarm_internal(result, false)?;
         tracing::info!("Updated zones alarm states in cache");
         Ok(())
     }
@@ -1339,7 +1339,7 @@ impl SatelIntegra {
         let cmd = vec![SatelCommand::ZonesViolation.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
         let result = process_zones_violation(&response, &self.config.read().unwrap().io_violation_invert)?;
-        self.update_zones_violation_internal(result)?;
+        self.update_zones_violation_internal(result, false)?;
         tracing::info!("Updated zones violation states in cache");
         Ok(())
     }
@@ -1350,7 +1350,7 @@ impl SatelIntegra {
         let cmd = vec![SatelCommand::ZonesTamperAlarm.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
         let result = process_zones_tamper_alarm(&response, &self.config.read().unwrap().io_tamper_alarm_invert)?;
-        self.update_zones_tamper_alarm_internal(result)?;
+        self.update_zones_tamper_alarm_internal(result, false)?;
         tracing::info!("Updated zones tamper alarm states in cache");
         Ok(())
     }
@@ -1361,7 +1361,7 @@ impl SatelIntegra {
         let cmd = vec![SatelCommand::ZonesAlarmMemory.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
         let result = process_zones_alarm_memory(&response, &self.config.read().unwrap().io_alarm_memory_invert)?;
-        self.update_zones_alarm_memory_internal(result)?;
+        self.update_zones_alarm_memory_internal(result, false)?;
         tracing::info!("Updated zones alarm memory states in cache");
         Ok(())
     }
@@ -1372,7 +1372,7 @@ impl SatelIntegra {
         let cmd = vec![SatelCommand::ZonesTamperAlarmMemory.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
         let result = process_zones_tamper_alarm_memory(&response, &self.config.read().unwrap().io_tamper_alarm_memory_invert)?;
-        self.update_zones_tamper_alarm_memory_internal(result)?;
+        self.update_zones_tamper_alarm_memory_internal(result, false)?;
         tracing::info!("Updated zones tamper alarm memory states in cache");
         Ok(())
     }
@@ -1383,7 +1383,7 @@ impl SatelIntegra {
         let cmd = vec![SatelCommand::ZonesBypass.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
         let result = process_zones_bypass(&response, &self.config.read().unwrap().io_bypass_invert)?;
-        self.update_zones_bypass_internal(result)?;
+        self.update_zones_bypass_internal(result, false)?;
         tracing::info!("Updated zones bypass states in cache");
         Ok(())
     }
@@ -1394,7 +1394,7 @@ impl SatelIntegra {
         let cmd = vec![SatelCommand::ZonesNoViolationTrouble.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
         let result = process_zones_no_violation_trouble(&response, &self.config.read().unwrap().io_no_violation_trouble_invert)?;
-        self.update_zones_no_violation_trouble_internal(result)?;
+        self.update_zones_no_violation_trouble_internal(result, false)?;
         tracing::info!("Updated zones 'no violation trouble' states in cache");
         Ok(())
     }
@@ -1405,7 +1405,7 @@ impl SatelIntegra {
         let cmd = vec![SatelCommand::ZonesLongViolationTrouble.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
         let result = process_zones_long_violation_trouble(&response, &self.config.read().unwrap().io_long_violation_trouble_invert)?;
-        self.update_zones_long_violation_trouble_internal(result)?;
+        self.update_zones_long_violation_trouble_internal(result, false)?;
         tracing::info!("Updated zones 'long violation trouble' states in cache");
         Ok(())
     }
@@ -1416,7 +1416,7 @@ impl SatelIntegra {
         let cmd = vec![SatelCommand::ArmedPartitionsSuppressed.to_byte()];
         let response = self.exchange(cmd, None, None).await?;
         let result = process_partitions_armed_suppressed(&response)?;
-        self.update_partitions_armed_internal(result)?;
+        self.update_partitions_armed_internal(result, false)?;
         tracing::info!("Updated suppressed partition arm states in cache");
         Ok(())
     }
@@ -1427,7 +1427,7 @@ impl SatelIntegra {
         let cmd = vec![SatelCommand::ArmedPartitionsReally.to_byte()];
         let response = self.exchange(cmd, None, None).await?;
         let result = process_partitions_armed_really(&response)?;
-        self.update_partitions_armed_really_internal(result)?;
+        self.update_partitions_armed_really_internal(result, false)?;
         tracing::info!("Updated real partition arm states in cache");
         Ok(())
     }
@@ -1438,7 +1438,7 @@ impl SatelIntegra {
         let cmd = vec![SatelCommand::PartitionsAlarm.to_byte()];
         let response = self.exchange(cmd, None, None).await?;
         let result = process_partitions_alarm(&response)?;
-        self.update_partitions_alarm_internal(result)?;
+        self.update_partitions_alarm_internal(result, false)?;
         tracing::info!("Updated partition alarm states in cache");
         Ok(())
     }
@@ -1449,7 +1449,7 @@ impl SatelIntegra {
         let cmd = vec![SatelCommand::PartitionsAlarmMemory.to_byte()];
         let response = self.exchange(cmd, None, None).await?;
         let result = process_partitions_alarm_memory(&response)?;
-        self.update_partitions_alarm_memory_internal(result)?;
+        self.update_partitions_alarm_memory_internal(result, false)?;
         tracing::info!("Updated partition alarm memory states in cache");
         Ok(())
     }
@@ -1461,17 +1461,17 @@ impl SatelIntegra {
         let cmd = vec![SatelCommand::PartitionsEntryTime.to_byte()];
         let response = self.exchange(cmd, None, None).await?;
         let result = process_partitions_entry_time(&response)?;
-        self.update_partitions_entry_time_internal(result)?;
+        self.update_partitions_entry_time_internal(result, false)?;
 
         let cmd = vec![SatelCommand::PartitionsExitTimeMore10s.to_byte()];
         let response = self.exchange(cmd, None, None).await?;
         let result = process_partitions_exit_time_gt_10s(&response)?;
-        self.update_partitions_exit_time_gt_10s_internal(result)?;
+        self.update_partitions_exit_time_gt_10s_internal(result, false)?;
 
         let cmd = vec![SatelCommand::PartitionsExitTimeLess10s.to_byte()];
         let response = self.exchange(cmd, None, None).await?;
         let result = process_partitions_exit_time_lt_10s(&response)?;
-        self.update_partitions_exit_time_lt_10s_internal(result)?;
+        self.update_partitions_exit_time_lt_10s_internal(result, false)?;
 
         tracing::info!("Updated partition countdown timers in cache");
         Ok(())
@@ -1483,8 +1483,185 @@ impl SatelIntegra {
         let cmd = vec![SatelCommand::OutputsState.to_byte(), 0x00];
         let response = self.exchange(cmd, None, None).await?;
         let result = process_outputs_state(&response)?;
-        self.update_outputs_state_internal(result)?;
+        self.update_outputs_state_internal(result, false)?;
         tracing::info!("Updated output states in cache");
+        Ok(())
+    }
+
+    /// Refreshes the violation states of all zones (0x00), updating the cache and emitting a `SatelEvent::ZoneViolation` for every zone.
+    pub async fn refresh_zones_violation(&self) -> Result<(), SatelError> {
+        tracing::info!("Refreshing all zones violation state (0x00)...");
+        let cmd = vec![SatelCommand::ZonesViolation.to_byte(), 0x00];
+        let response = self.exchange(cmd, None, None).await?;
+        let result = process_zones_violation(&response, &self.config.read().unwrap().io_violation_invert)?;
+        self.update_zones_violation_internal(result, true)?;
+        tracing::info!("Refreshed zones violation states in cache (emitted all)");
+        Ok(())
+    }
+
+    /// Refreshes the tamper states of all zones (0x01), updating the cache and emitting a `SatelEvent::ZoneTamper` for every zone.
+    pub async fn refresh_zones_tamper(&self) -> Result<(), SatelError> {
+        tracing::info!("Refreshing all zones tamper state (0x01)...");
+        let cmd = vec![SatelCommand::ZonesTamper.to_byte(), 0x00];
+        let response = self.exchange(cmd, None, None).await?;
+        let result = process_zones_tamper(&response, &self.config.read().unwrap().io_tamper_invert)?;
+        self.update_zones_tamper_internal(result, true)?;
+        tracing::info!("Refreshed zones tamper states in cache (emitted all)");
+        Ok(())
+    }
+
+    /// Refreshes the alarm states of all zones (0x02), updating the cache and emitting a `SatelEvent::ZoneAlarm` for every zone.
+    pub async fn refresh_zones_alarm(&self) -> Result<(), SatelError> {
+        tracing::info!("Refreshing all zones alarm state (0x02)...");
+        let cmd = vec![SatelCommand::ZonesAlarm.to_byte(), 0x00];
+        let response = self.exchange(cmd, None, None).await?;
+        let result = process_zones_alarm(&response, &self.config.read().unwrap().io_alarm_invert)?;
+        self.update_zones_alarm_internal(result, true)?;
+        tracing::info!("Refreshed zones alarm states in cache (emitted all)");
+        Ok(())
+    }
+
+    /// Refreshes the tamper alarm states of all zones (0x03), updating the cache and emitting a `SatelEvent::ZoneTamperAlarm` for every zone.
+    pub async fn refresh_zones_tamper_alarm(&self) -> Result<(), SatelError> {
+        tracing::info!("Refreshing all zones tamper alarm state (0x03)...");
+        let cmd = vec![SatelCommand::ZonesTamperAlarm.to_byte(), 0x00];
+        let response = self.exchange(cmd, None, None).await?;
+        let result = process_zones_tamper_alarm(&response, &self.config.read().unwrap().io_tamper_alarm_invert)?;
+        self.update_zones_tamper_alarm_internal(result, true)?;
+        tracing::info!("Refreshed zones tamper alarm states in cache (emitted all)");
+        Ok(())
+    }
+
+    /// Refreshes the alarm memory states of all zones (0x04), updating the cache and emitting a `SatelEvent::ZoneAlarmMemory` for every zone.
+    pub async fn refresh_zones_alarm_memory(&self) -> Result<(), SatelError> {
+        tracing::info!("Refreshing all zones alarm memory state (0x04)...");
+        let cmd = vec![SatelCommand::ZonesAlarmMemory.to_byte(), 0x00];
+        let response = self.exchange(cmd, None, None).await?;
+        let result = process_zones_alarm_memory(&response, &self.config.read().unwrap().io_alarm_memory_invert)?;
+        self.update_zones_alarm_memory_internal(result, true)?;
+        tracing::info!("Refreshed zones alarm memory states in cache (emitted all)");
+        Ok(())
+    }
+
+    /// Refreshes the tamper alarm memory states of all zones (0x05), updating the cache and emitting a `SatelEvent::ZoneTamperAlarmMemory` for every zone.
+    pub async fn refresh_zones_tamper_alarm_memory(&self) -> Result<(), SatelError> {
+        tracing::info!("Refreshing all zones tamper alarm memory state (0x05)...");
+        let cmd = vec![SatelCommand::ZonesTamperAlarmMemory.to_byte(), 0x00];
+        let response = self.exchange(cmd, None, None).await?;
+        let result = process_zones_tamper_alarm_memory(&response, &self.config.read().unwrap().io_tamper_alarm_memory_invert)?;
+        self.update_zones_tamper_alarm_memory_internal(result, true)?;
+        tracing::info!("Refreshed zones tamper alarm memory states in cache (emitted all)");
+        Ok(())
+    }
+
+    /// Refreshes the bypass states of all zones (0x06), updating the cache and emitting a `SatelEvent::ZoneBypass` for every zone.
+    pub async fn refresh_zones_bypass(&self) -> Result<(), SatelError> {
+        tracing::info!("Refreshing all zones bypass state (0x06)...");
+        let cmd = vec![SatelCommand::ZonesBypass.to_byte(), 0x00];
+        let response = self.exchange(cmd, None, None).await?;
+        let result = process_zones_bypass(&response, &self.config.read().unwrap().io_bypass_invert)?;
+        self.update_zones_bypass_internal(result, true)?;
+        tracing::info!("Refreshed zones bypass states in cache (emitted all)");
+        Ok(())
+    }
+
+    /// Refreshes the 'no violation trouble' states of all zones (0x07), updating the cache and emitting a `SatelEvent::ZoneNoViolationTrouble` for every zone.
+    pub async fn refresh_zones_no_violation_trouble(&self) -> Result<(), SatelError> {
+        tracing::info!("Refreshing all zones 'no violation trouble' state (0x07)...");
+        let cmd = vec![SatelCommand::ZonesNoViolationTrouble.to_byte(), 0x00];
+        let response = self.exchange(cmd, None, None).await?;
+        let result = process_zones_no_violation_trouble(&response, &self.config.read().unwrap().io_no_violation_trouble_invert)?;
+        self.update_zones_no_violation_trouble_internal(result, true)?;
+        tracing::info!("Refreshed zones 'no violation trouble' states in cache (emitted all)");
+        Ok(())
+    }
+
+    /// Refreshes the 'long violation trouble' states of all zones (0x08), updating the cache and emitting a `SatelEvent::ZoneLongViolationTrouble` for every zone.
+    pub async fn refresh_zones_long_violation_trouble(&self) -> Result<(), SatelError> {
+        tracing::info!("Refreshing all zones 'long violation trouble' state (0x08)...");
+        let cmd = vec![SatelCommand::ZonesLongViolationTrouble.to_byte(), 0x00];
+        let response = self.exchange(cmd, None, None).await?;
+        let result = process_zones_long_violation_trouble(&response, &self.config.read().unwrap().io_long_violation_trouble_invert)?;
+        self.update_zones_long_violation_trouble_internal(result, true)?;
+        tracing::info!("Refreshed zones 'long violation trouble' states in cache (emitted all)");
+        Ok(())
+    }
+
+    /// Refreshes the suppressed armed partition states (0x09), updating the cache and emitting a `SatelEvent::PartitionArmed` for every partition.
+    pub async fn refresh_partitions_armed_suppressed(&self) -> Result<(), SatelError> {
+        tracing::info!("Refreshing suppressed partition arm states (0x09)...");
+        let cmd = vec![SatelCommand::ArmedPartitionsSuppressed.to_byte()];
+        let response = self.exchange(cmd, None, None).await?;
+        let result = process_partitions_armed_suppressed(&response)?;
+        self.update_partitions_armed_internal(result, true)?;
+        tracing::info!("Refreshed suppressed partition arm states in cache (emitted all)");
+        Ok(())
+    }
+
+    /// Refreshes the real armed partition states (0x0A), updating the cache and emitting a `SatelEvent::PartitionArmedReally` for every partition.
+    pub async fn refresh_partitions_armed_really(&self) -> Result<(), SatelError> {
+        tracing::info!("Refreshing real partition arm states (0x0A)...");
+        let cmd = vec![SatelCommand::ArmedPartitionsReally.to_byte()];
+        let response = self.exchange(cmd, None, None).await?;
+        let result = process_partitions_armed_really(&response)?;
+        self.update_partitions_armed_really_internal(result, true)?;
+        tracing::info!("Refreshed real partition arm states in cache (emitted all)");
+        Ok(())
+    }
+
+    /// Refreshes the partition alarm states (0x13), updating the cache and emitting a `SatelEvent::PartitionAlarm` for every partition.
+    pub async fn refresh_partitions_alarm(&self) -> Result<(), SatelError> {
+        tracing::info!("Refreshing partition alarm states (0x13)...");
+        let cmd = vec![SatelCommand::PartitionsAlarm.to_byte()];
+        let response = self.exchange(cmd, None, None).await?;
+        let result = process_partitions_alarm(&response)?;
+        self.update_partitions_alarm_internal(result, true)?;
+        tracing::info!("Refreshed partition alarm states in cache (emitted all)");
+        Ok(())
+    }
+
+    /// Refreshes the partition alarm memory states (0x15), updating the cache and emitting a `SatelEvent::PartitionAlarmMemory` for every partition.
+    pub async fn refresh_partitions_alarm_memory(&self) -> Result<(), SatelError> {
+        tracing::info!("Refreshing partition alarm memory states (0x15)...");
+        let cmd = vec![SatelCommand::PartitionsAlarmMemory.to_byte()];
+        let response = self.exchange(cmd, None, None).await?;
+        let result = process_partitions_alarm_memory(&response)?;
+        self.update_partitions_alarm_memory_internal(result, true)?;
+        tracing::info!("Refreshed partition alarm memory states in cache (emitted all)");
+        Ok(())
+    }
+
+    /// Refreshes partition entry/exit countdown timers (0x0E, 0x0F, 0x10), updating the cache and emitting countdown events for every partition.
+    pub async fn refresh_partitions_times(&self) -> Result<(), SatelError> {
+        tracing::info!("Refreshing partition entry/exit timer countdowns...");
+
+        let cmd = vec![SatelCommand::PartitionsEntryTime.to_byte()];
+        let response = self.exchange(cmd, None, None).await?;
+        let result = process_partitions_entry_time(&response)?;
+        self.update_partitions_entry_time_internal(result, true)?;
+
+        let cmd = vec![SatelCommand::PartitionsExitTimeMore10s.to_byte()];
+        let response = self.exchange(cmd, None, None).await?;
+        let result = process_partitions_exit_time_gt_10s(&response)?;
+        self.update_partitions_exit_time_gt_10s_internal(result, true)?;
+
+        let cmd = vec![SatelCommand::PartitionsExitTimeLess10s.to_byte()];
+        let response = self.exchange(cmd, None, None).await?;
+        let result = process_partitions_exit_time_lt_10s(&response)?;
+        self.update_partitions_exit_time_lt_10s_internal(result, true)?;
+
+        tracing::info!("Refreshed partition countdown timers in cache (emitted all)");
+        Ok(())
+    }
+
+    /// Refreshes all output states (0x17), updating the cache and emitting a `SatelEvent::OutputChanged` for every output.
+    pub async fn refresh_outputs_state(&self) -> Result<(), SatelError> {
+        tracing::info!("Refreshing all output states (0x17)...");
+        let cmd = vec![SatelCommand::OutputsState.to_byte(), 0x00];
+        let response = self.exchange(cmd, None, None).await?;
+        let result = process_outputs_state(&response)?;
+        self.update_outputs_state_internal(result, true)?;
+        tracing::info!("Refreshed output states in cache (emitted all)");
         Ok(())
     }
 
